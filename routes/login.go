@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"github.com/gin-gonic/gin"
 	"server/models"
-	"server/db" // Ensure your DB package is imported correctly (note: package name is lowercase "db")
+	"server/database" // Ensure your DB package is imported correctly (note: package name is lowercase "db")
 )
 
 // RegisterLoginRoute registers the login route.
