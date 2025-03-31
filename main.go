@@ -37,7 +37,7 @@ func main() {
     routes.RegisterGetEventByID(router,db)
 	routes.RegisterGetSubjectsRoute(router, db)
 	routes.RegisterGetSubjectsTeacherRoute(router,db)
-	
+	routes.RegisterTestRoute(router)
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
