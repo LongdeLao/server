@@ -33,7 +33,7 @@ func main() {
 	// Set up static file serving for images
 	router.Static("/images", "./images")
 	router.Static("/profile_pictures", "./profile_pictures")
-	
+
 	// Also serve static files under /api prefix to maintain compatibility
 	router.Static("/api/profile_pictures", "./profile_pictures")
 	router.Static("/api/images", "./images")

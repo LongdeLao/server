@@ -373,6 +373,15 @@ func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
 		if err := rows.Scan(&imagePath); err != nil {
 			return nil, err
 		}
+
+		// Ensure the path starts with a forward slash for consistency
+		if !strings.HasPrefix(imagePath, "/") {
+			imagePath = "/" + imagePath
+		}
+
+		// Fix path if it contains double slashes
+		imagePath = strings.ReplaceAll(imagePath, "//", "/")
+
 		images = append(images, ImageModel{Data: imagePath})
 	}
 
