@@ -318,7 +318,7 @@ func handleProfilePictureUpload(db *sql.DB) gin.HandlerFunc {
 		// Return the URL for the uploaded file
 		c.JSON(http.StatusOK, gin.H{
 			"message":         "Profile picture uploaded successfully",
-			"profile_picture": fmt.Sprintf("/profile_pictures/%s", filename),
+			"profile_picture": fmt.Sprintf("/api/profile_pictures/%s", filename),
 		})
 	}
 }
@@ -406,7 +406,7 @@ func getProfileInfo(db *sql.DB) gin.HandlerFunc {
 
 		if err == nil && filePath.Valid {
 			// Convert file path to URL
-			profilePicture = fmt.Sprintf("/%s", filePath.String)
+			profilePicture = fmt.Sprintf("/api/%s", filePath.String)
 		}
 
 		// Return the user profile with explicit fields including status
