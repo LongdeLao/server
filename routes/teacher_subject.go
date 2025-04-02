@@ -11,22 +11,52 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Student represents a student's basic details.
+/**
+ * Student represents a student's basic details in the teacher's subject view.
+ */
 type Student struct {
-	ID        int    `json:"id"`
-	FirstName string `json:"name"`      // Matching Python's "name" key.
-	LastName  string `json:"last_name"` // Matching Python's "last_name" key.
+	ID        int    `json:"id"`        // Student's user ID
+	FirstName string `json:"name"`      // Student's first name
+	LastName  string `json:"last_name"` // Student's last name
 }
 
-// AdminClass represents the grouped subject details.
+/**
+ * AdminClass represents a class group with subject details.
+ */
 type AdminClass struct {
-	SubjectName   string    `json:"subject_name"`
-	Code          string    `json:"code"`
-	TeachingGroup string    `json:"teaching_group"`
-	Students      []Student `json:"students"`
+	SubjectName   string    `json:"subject_name"`   // Subject name (e.g., "Mathematics SL")
+	Code          string    `json:"code"`           // Subject code (e.g., "MATH-SL")
+	TeachingGroup string    `json:"teaching_group"` // Teaching group identifier
+	Students      []Student `json:"students"`       // List of students in the class
 }
 
-// RegisterGetSubjectsTeacherRoute registers the route for fetching subjects by teacher.
+/**
+ * RegisterGetSubjectsTeacherRoute registers the route for fetching subjects by teacher.
+ *
+ * Endpoint: GET /get_subjects_by_teacher/:teacher_id
+ *
+ * Parameters:
+ *   - teacher_id: The ID of the teacher (integer)
+ *
+ * Returns:
+ *   - 200 OK: Successfully retrieved teacher's subjects
+ *     [
+ *       {
+ *         "subject_name": string,   // Subject name (e.g., "Mathematics SL")
+ *         "code": string,           // Subject code (e.g., "MATH-SL")
+ *         "teaching_group": string, // Teaching group identifier
+ *         "students": [
+ *           {
+ *             "id": number,        // Student's user ID
+ *             "name": string,      // Student's first name
+ *             "last_name": string  // Student's last name
+ *           }
+ *         ]
+ *       }
+ *     ]
+ *   - 400 Bad Request: Invalid teacher_id format
+ *   - 500 Internal Server Error: Database error
+ */
 func RegisterGetSubjectsTeacherRoute(router *gin.Engine, db *sql.DB) {
 	router.GET("/get_subjects_by_teacher/:teacher_id", func(c *gin.Context) {
 		teacherIDParam := c.Param("teacher_id")
@@ -49,10 +79,20 @@ func RegisterGetSubjectsTeacherRoute(router *gin.Engine, db *sql.DB) {
 	})
 }
 
-// getSubjectsByTeacher queries the database and groups subjects along with student details.
-// It mimics the Python version exactly: performing a query to fetch subject details,
-// then for each row fetching student details, grouping by subject, code, teaching group,
-// cleaning the subject name, and appending " SL" or " HL" if needed.
+/**
+ * getSubjectsByTeacher queries the database and groups subjects with student details.
+ *
+ * This function:
+ * 1. Fetches all subjects taught by the teacher
+ * 2. For each subject, retrieves the list of students
+ * 3. Groups the data by subject, code, and teaching group
+ * 4. Cleans subject names and adds SL/HL suffixes
+ *
+ * @param db *sql.DB - Database connection
+ * @param teacherID int - The ID of the teacher
+ * @return []AdminClass - List of grouped subjects with student details
+ * @return error - Any error that occurred during the process
+ */
 func getSubjectsByTeacher(db *sql.DB, teacherID int) ([]AdminClass, error) {
 	// Query to get subject, code, teaching_group, and student_id.
 	query := `

@@ -3,36 +3,41 @@ package routes
 import (
 	"database/sql"
 	"encoding/base64"
-	
+
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-// ImageModel represents an image associated with an event.
+/**
+ * ImageModel represents an image associated with an event.
+ */
 type ImageModel struct {
-	ID   string `json:"id"`
+	ID   string `json:"id"`   // Unique identifier for the image
 	Data string `json:"data"` // Base64-encoded image data
 }
 
-// Event represents the event data structure.
+/**
+ * Event represents the complete event data structure.
+ */
 type Event struct {
-	EventID          string        `json:"eventID"`
-	AuthorID         int           `json:"authorID"`
-	AuthorName       string        `json:"authorName"`
-	Title            string        `json:"title"`
-	EventDescription string        `json:"eventDescription"`
-	Images           []ImageModel  `json:"images"`
-	Address          string        `json:"address"`
-	EventDate        time.Time     `json:"eventDate"`
-	IsWholeDay       bool          `json:"isWholeDay"`
-	StartTime        *time.Time    `json:"startTime,omitempty"`
-	EndTime          *time.Time    `json:"endTime,omitempty"`
+	EventID          string       `json:"eventID"`             // Unique identifier for the event
+	AuthorID         int          `json:"authorID"`            // ID of the event creator
+	AuthorName       string       `json:"authorName"`          // Name of the event creator
+	Title            string       `json:"title"`               // Event title
+	EventDescription string       `json:"eventDescription"`    // Detailed description
+	Images           []ImageModel `json:"images"`              // List of associated images
+	Address          string       `json:"address"`             // Event location
+	EventDate        time.Time    `json:"eventDate"`           // Date of the event
+	IsWholeDay       bool         `json:"isWholeDay"`          // Whether it's a whole-day event
+	StartTime        *time.Time   `json:"startTime,omitempty"` // Start time (if not whole-day)
+	EndTime          *time.Time   `json:"endTime,omitempty"`   // End time (if not whole-day)
 }
 
 // SaveBase64Image decodes the base64 string and saves the image to the server.
@@ -110,7 +115,7 @@ func InsertEvent(db *sql.DB, event Event) error {
 		}
 
 		// Insert image data into the database
-		img.ID = uuid.New().String() // Generate a new UUID for the image ID
+		img.ID = uuid.New().String()                                   // Generate a new UUID for the image ID
 		_, err = tx.Exec(queryImage, img.ID, event.EventID, imagePath) // Insert image file path
 		if err != nil {
 			log.Println("Error inserting image data:", err)
@@ -128,10 +133,22 @@ func InsertEvent(db *sql.DB, event Event) error {
 	return nil
 }
 
-/// RegisterEventRoutes registers the POST route for inserting an event and static image serving.
+/**
+ * RegisterEventRoutes registers all event-related routes.
+ *
+ * Endpoints:
+ * 1. POST /post_event
+ *    - Creates a new event
+ *    - Accepts event data in JSON format
+ *    - Returns success message with event ID
+ *
+ * 2. GET /event/:id
+ *    - Retrieves event details by ID
+ *    - Returns complete event data including images
+ */
 func RegisterEventRoutes(router *gin.Engine, db *sql.DB) {
-	// Serve static files (images) from the 'images' folder
-	router.Static("/images", "./images")
+	// Remove the static route registration since it's already in main.go
+	// router.Static("/images", "./images")
 
 	// POST route to create an event
 	router.POST("/post_event", func(c *gin.Context) {
@@ -170,7 +187,6 @@ func RegisterEventRoutes(router *gin.Engine, db *sql.DB) {
 	})
 }
 
-
 // EventWithoutImages represents the event data structure without images.
 type EventWithoutImages struct {
 	EventID          string     `json:"eventID"`
@@ -178,12 +194,12 @@ type EventWithoutImages struct {
 	AuthorName       string     `json:"authorName"`
 	Title            string     `json:"title"`
 	EventDescription string     `json:"eventDescription"`
-	Images           []string   `json:"images"`               // Ensure images come after eventDescription
+	Images           []string   `json:"images"` // Ensure images come after eventDescription
 	Address          string     `json:"address"`
 	EventDate        time.Time  `json:"eventDate"`
 	IsWholeDay       bool       `json:"isWholeDay"`
-	StartTime        *time.Time `json:"startTime,omitempty"`  // Use pointer for optional fields
-	EndTime          *time.Time `json:"endTime,omitempty"`    // Use pointer for optional fields
+	StartTime        *time.Time `json:"startTime,omitempty"` // Use pointer for optional fields
+	EndTime          *time.Time `json:"endTime,omitempty"`   // Use pointer for optional fields
 }
 
 // RegisterGetAllEvents registers a route that returns all events without images.
@@ -205,7 +221,7 @@ func RegisterGetAllEvents(router *gin.Engine, db *sql.DB) {
 		var events []EventWithoutImages
 		for rows.Next() {
 			var ev EventWithoutImages
-			var startTime, endTime *time.Time  // Initialize as pointers to nil
+			var startTime, endTime *time.Time // Initialize as pointers to nil
 			if err := rows.Scan(&ev.EventID, &ev.AuthorID, &ev.AuthorName, &ev.Title, &ev.EventDescription, &ev.Address, &ev.EventDate, &ev.IsWholeDay, &startTime, &endTime); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -230,7 +246,39 @@ func RegisterGetAllEvents(router *gin.Engine, db *sql.DB) {
 	})
 }
 
-// RegisterGetEventByID registers the route to fetch an event by its ID
+/**
+ * RegisterGetEventByID registers the route for fetching an event by its ID.
+ *
+ * Endpoint: GET /event/:id
+ *
+ * Parameters:
+ *   - id: The unique identifier of the event
+ *
+ * Returns:
+ *   - 200 OK: Successfully retrieved event
+ *     {
+ *       "event": {
+ *         "eventID": string,          // Unique identifier
+ *         "authorID": number,         // Creator's ID
+ *         "authorName": string,       // Creator's name
+ *         "title": string,            // Event title
+ *         "eventDescription": string, // Description
+ *         "images": [                 // List of images
+ *           {
+ *             "id": string,          // Image ID
+ *             "data": string         // Base64 image data
+ *           }
+ *         ],
+ *         "address": string,          // Location
+ *         "eventDate": string,        // Event date
+ *         "isWholeDay": boolean,      // Whole-day flag
+ *         "startTime": string,        // Start time (optional)
+ *         "endTime": string          // End time (optional)
+ *       }
+ *     }
+ *   - 404 Not Found: Event not found
+ *   - 500 Internal Server Error: Database error
+ */
 func RegisterGetEventByID(router *gin.Engine, db *sql.DB) {
 	router.GET("/event/:id", func(c *gin.Context) {
 		// Get the eventID from the URL parameters
@@ -255,7 +303,14 @@ func RegisterGetEventByID(router *gin.Engine, db *sql.DB) {
 	})
 }
 
-// GetEventByID fetches the event by its ID and returns the complete event including images
+/**
+ * GetEventByID fetches the event by its ID and returns the complete event including images.
+ *
+ * @param db *sql.DB - Database connection
+ * @param eventID string - The unique identifier of the event
+ * @return *Event - The complete event data
+ * @return error - Any error that occurred during the process
+ */
 func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
 	// Query to fetch event details
 	eventQuery := `
@@ -278,8 +333,8 @@ func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
 
 	// Fetch event details from the database
 	err := db.QueryRow(eventQuery, eventID).Scan(
-		&event.EventID, &event.AuthorID, &event.AuthorName, &event.Title, 
-		&event.EventDescription, &event.Address, &event.EventDate, 
+		&event.EventID, &event.AuthorID, &event.AuthorName, &event.Title,
+		&event.EventDescription, &event.Address, &event.EventDate,
 		&event.IsWholeDay, &startTime, &endTime,
 	)
 	if err != nil {

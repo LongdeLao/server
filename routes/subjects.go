@@ -10,17 +10,41 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Subject represents the subject data returned as JSON.
+/**
+ * Subject represents the subject data structure returned by the API.
+ */
 type Subject struct {
-	Subject       string `json:"subject"`
-	Code          string `json:"code"`
-	Initials      string `json:"initials"`
-	TeachingGroup string `json:"teaching_group"`
-	TeacherID     int    `json:"teacher_id"`
-	TeacherName   string `json:"teacher_name"`
+	Subject       string `json:"subject"`        // Subject name (e.g., "Mathematics SL")
+	Code          string `json:"code"`           // Subject code (e.g., "MATH-SL")
+	Initials      string `json:"initials"`       // Teacher's initials
+	TeachingGroup string `json:"teaching_group"` // Teaching group identifier
+	TeacherID     int    `json:"teacher_id"`     // Teacher's user ID
+	TeacherName   string `json:"teacher_name"`   // Teacher's full name
 }
 
-// RegisterGetSubjectsRoute registers the /get_subjects/:student_id endpoint.
+/**
+ * RegisterGetSubjectsRoute registers the route for fetching student subjects.
+ *
+ * Endpoint: GET /get_subjects/:student_id
+ *
+ * Parameters:
+ *   - student_id: The ID of the student (integer)
+ *
+ * Returns:
+ *   - 200 OK: Successfully retrieved subjects
+ *     [
+ *       {
+ *         "subject": string,       // Subject name (e.g., "Mathematics SL")
+ *         "code": string,          // Subject code (e.g., "MATH-SL")
+ *         "initials": string,      // Teacher's initials
+ *         "teaching_group": string, // Teaching group identifier
+ *         "teacher_id": number,    // Teacher's user ID
+ *         "teacher_name": string   // Teacher's full name
+ *       }
+ *     ]
+ *   - 400 Bad Request: Invalid student_id format
+ *   - 500 Internal Server Error: Database error
+ */
 func RegisterGetSubjectsRoute(router *gin.Engine, db *sql.DB) {
 	router.GET("/get_subjects/:student_id", func(c *gin.Context) {
 		// Retrieve the student ID from the URL parameters.

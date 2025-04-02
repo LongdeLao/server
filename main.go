@@ -30,13 +30,20 @@ func main() {
 	}
 	defer db.Close()
 
+	// Set up static file serving for images
+	router.Static("/images", "./images")
+	router.Static("/profile_pictures", "./profile_pictures")
+
 	// Register your routes.
 	routes.RegisterLoginRoute(router)
 	routes.RegisterEventRoutes(router, db)
-	routes.RegisterGetAllEvents(router,db)
-    routes.RegisterGetEventByID(router,db)
+	routes.RegisterGetAllEvents(router, db)
+	routes.RegisterGetEventByID(router, db)
 	routes.RegisterGetSubjectsRoute(router, db)
-	routes.RegisterGetSubjectsTeacherRoute(router,db)
+	routes.RegisterGetSubjectsTeacherRoute(router, db)
+	routes.RegisterProfileRoutes(router, db)
+	routes.SetupAttendanceRoutes(router, db)
+	routes.SetupUserRoutes(router, db)
 	routes.RegisterTestRoute(router)
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
