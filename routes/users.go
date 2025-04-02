@@ -29,8 +29,8 @@ func GetAllUsersHandler(c *gin.Context, db *sql.DB) {
 }
 
 // SetupUserRoutes registers all user management routes
-func SetupUserRoutes(router *gin.Engine, db *sql.DB) {
-	userGroup := router.Group("/api/users")
+func SetupUserRoutes(router gin.IRouter, db *sql.DB) {
+	userGroup := router.Group("/users")
 	{
 		// Get all users
 		userGroup.GET("", func(c *gin.Context) {

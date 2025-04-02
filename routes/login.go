@@ -40,7 +40,7 @@ import (
  *   - 404 Not Found: User not found
  *   - 500 Internal Server Error: Database error
  */
-func RegisterLoginRoute(router *gin.Engine) {
+func RegisterLoginRoute(router gin.IRouter) {
 	router.POST("/login", loginHandler)
 }
 

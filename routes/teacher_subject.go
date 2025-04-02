@@ -57,7 +57,7 @@ type AdminClass struct {
  *   - 400 Bad Request: Invalid teacher_id format
  *   - 500 Internal Server Error: Database error
  */
-func RegisterGetSubjectsTeacherRoute(router *gin.Engine, db *sql.DB) {
+func RegisterGetSubjectsTeacherRoute(router gin.IRouter, db *sql.DB) {
 	router.GET("/get_subjects_by_teacher/:teacher_id", func(c *gin.Context) {
 		teacherIDParam := c.Param("teacher_id")
 		var teacherID int

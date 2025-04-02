@@ -732,8 +732,8 @@ func GetAllAttendance(c *gin.Context, db *sql.DB) {
 }
 
 // SetupAttendanceRoutes sets up the attendance routes
-func SetupAttendanceRoutes(router *gin.Engine, db *sql.DB) {
-	attendanceGroup := router.Group("/api/attendance")
+func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
+	attendanceGroup := router.Group("/attendance")
 	{
 		attendanceGroup.GET("/year-groups", func(c *gin.Context) {
 			GetYearGroups(c, db)

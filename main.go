@@ -34,17 +34,21 @@ func main() {
 	router.Static("/images", "./images")
 	router.Static("/profile_pictures", "./profile_pictures")
 
-	// Register your routes.
-	routes.RegisterLoginRoute(router)
-	routes.RegisterEventRoutes(router, db)
-	routes.RegisterGetAllEvents(router, db)
-	routes.RegisterGetEventByID(router, db)
-	routes.RegisterGetSubjectsRoute(router, db)
-	routes.RegisterGetSubjectsTeacherRoute(router, db)
-	routes.RegisterProfileRoutes(router, db)
-	routes.SetupAttendanceRoutes(router, db)
-	routes.SetupUserRoutes(router, db)
-	routes.RegisterTestRoute(router)
+	// Create an API router group
+	apiRouter := router.Group("/api")
+
+	// Register your routes under the API router group
+	routes.RegisterLoginRoute(apiRouter)
+	routes.RegisterEventRoutes(apiRouter, db)
+	routes.RegisterGetAllEvents(apiRouter, db)
+	routes.RegisterGetEventByID(apiRouter, db)
+	routes.RegisterGetSubjectsRoute(apiRouter, db)
+	routes.RegisterGetSubjectsTeacherRoute(apiRouter, db)
+	routes.RegisterProfileRoutes(apiRouter, db)
+	routes.SetupAttendanceRoutes(apiRouter, db)
+	routes.SetupUserRoutes(apiRouter, db)
+	routes.RegisterTestRoute(apiRouter)
+
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {

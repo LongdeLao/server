@@ -17,34 +17,34 @@ import (
  * RegisterProfileRoutes registers all profile-related routes.
  *
  * Endpoints:
- * 1. POST /api/profile/upload-picture/:userId
+ * 1. POST /profile/upload-picture/:userId
  *    - Uploads a profile picture for a user
  *    - Accepts multipart form data with "profile_picture" field
  *    - Returns URL of uploaded picture
  *
- * 2. GET /api/profile/:userId
+ * 2. GET /profile/:userId
  *    - Retrieves user profile information
  *    - Returns complete user profile including roles and picture
  *
- * 3. PUT /api/profile/update-email/:userId
+ * 3. PUT /profile/update-email/:userId
  *    - Updates user's email address
  *    - Requires new email in request body
  *
- * 4. PUT /api/profile/change-password/:userId
+ * 4. PUT /profile/change-password/:userId
  *    - Changes user's password
  *    - Requires current and new password in request body
  */
-func RegisterProfileRoutes(router *gin.Engine, db *sql.DB) {
-	router.POST("/api/profile/upload-picture/:userId", handleProfilePictureUpload(db))
-	router.GET("/api/profile/:userId", getProfileInfo(db))
-	router.PUT("/api/profile/update-email/:userId", updateUserEmail(db))
-	router.PUT("/api/profile/change-password/:userId", changePassword(db))
+func RegisterProfileRoutes(router gin.IRouter, db *sql.DB) {
+	router.POST("/profile/upload-picture/:userId", handleProfilePictureUpload(db))
+	router.GET("/profile/:userId", getProfileInfo(db))
+	router.PUT("/profile/update-email/:userId", updateUserEmail(db))
+	router.PUT("/profile/change-password/:userId", changePassword(db))
 }
 
 /**
  * changePassword handles changing a user's password.
  *
- * Endpoint: PUT /api/profile/change-password/:userId
+ * Endpoint: PUT /profile/change-password/:userId
  *
  * Request Body:
  * {
@@ -159,7 +159,7 @@ func changePassword(db *sql.DB) gin.HandlerFunc {
 /**
  * updateUserEmail handles updating a user's email address.
  *
- * Endpoint: PUT /api/profile/update-email/:userId
+ * Endpoint: PUT /profile/update-email/:userId
  *
  * Request Body:
  * {
@@ -226,7 +226,7 @@ func updateUserEmail(db *sql.DB) gin.HandlerFunc {
 /**
  * handleProfilePictureUpload handles uploading a profile picture.
  *
- * Endpoint: POST /api/profile/upload-picture/:userId
+ * Endpoint: POST /profile/upload-picture/:userId
  *
  * Request:
  * - Content-Type: multipart/form-data
@@ -326,7 +326,7 @@ func handleProfilePictureUpload(db *sql.DB) gin.HandlerFunc {
 /**
  * getProfileInfo retrieves a user's complete profile information.
  *
- * Endpoint: GET /api/profile/:userId
+ * Endpoint: GET /profile/:userId
  *
  * Returns:
  *   - 200 OK: Profile retrieved successfully

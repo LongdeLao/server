@@ -146,7 +146,7 @@ func InsertEvent(db *sql.DB, event Event) error {
  *    - Retrieves event details by ID
  *    - Returns complete event data including images
  */
-func RegisterEventRoutes(router *gin.Engine, db *sql.DB) {
+func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 	// Remove the static route registration since it's already in main.go
 	// router.Static("/images", "./images")
 
@@ -203,7 +203,7 @@ type EventWithoutImages struct {
 }
 
 // RegisterGetAllEvents registers a route that returns all events without images.
-func RegisterGetAllEvents(router *gin.Engine, db *sql.DB) {
+func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
 	router.GET("/events", func(c *gin.Context) {
 		// Query all events from the database (no filtering by month or year)
 		query := `
@@ -279,7 +279,7 @@ func RegisterGetAllEvents(router *gin.Engine, db *sql.DB) {
  *   - 404 Not Found: Event not found
  *   - 500 Internal Server Error: Database error
  */
-func RegisterGetEventByID(router *gin.Engine, db *sql.DB) {
+func RegisterGetEventByID(router gin.IRouter, db *sql.DB) {
 	router.GET("/event/:id", func(c *gin.Context) {
 		// Get the eventID from the URL parameters
 		eventID := c.Param("id")

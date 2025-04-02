@@ -45,7 +45,7 @@ type Subject struct {
  *   - 400 Bad Request: Invalid student_id format
  *   - 500 Internal Server Error: Database error
  */
-func RegisterGetSubjectsRoute(router *gin.Engine, db *sql.DB) {
+func RegisterGetSubjectsRoute(router gin.IRouter, db *sql.DB) {
 	router.GET("/get_subjects/:student_id", func(c *gin.Context) {
 		// Retrieve the student ID from the URL parameters.
 		studentIDStr := c.Param("student_id")
