@@ -2,14 +2,16 @@ package routes
 
 import (
 	"database/sql"
-	"encoding/base64"
 
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
+	"path/filepath"
+	"strconv"
 	"time"
+
+	"mime/multipart"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,8 +21,7 @@ import (
  * ImageModel represents an image associated with an event.
  */
 type ImageModel struct {
-	ID   string `json:"id"`   // Unique identifier for the image
-	Data string `json:"data"` // Base64-encoded image data
+	FilePath string `json:"filePath"` // The file path of the image
 }
 
 /**
@@ -40,36 +41,22 @@ type Event struct {
 	EndTime          *time.Time   `json:"endTime,omitempty"`   // End time (if not whole-day)
 }
 
-// SaveBase64Image decodes the base64 string and saves the image to the server.
-func SaveBase64Image(base64Data string) (string, error) {
-	// Split the base64 string to remove the data URL prefix (if present)
-	// Example: "data:image/jpeg;base64,/9j/4AAQSkZ..."
-	parts := strings.Split(base64Data, ",")
-	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid base64 image data")
-	}
-
-	// Decode the base64 string
-	data, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil {
-		log.Println("Error decoding base64 data:", err)
-		return "", fmt.Errorf("error decoding base64 data: %v", err)
-	}
-
+// SaveImage saves the uploaded image to the server.
+func SaveImage(file *multipart.FileHeader, c *gin.Context) (string, error) {
 	// Generate a unique filename for the image
 	imageID := uuid.New().String()
-	imagePath := fmt.Sprintf("images/%s.jpg", imageID)
+	extension := filepath.Ext(file.Filename)
+	imagePath := fmt.Sprintf("images/%s%s", imageID, extension)
 
 	// Create the images directory if it doesn't exist
-	err = os.MkdirAll("images", os.ModePerm)
+	err := os.MkdirAll("images", os.ModePerm)
 	if err != nil {
 		log.Println("Error creating directory for image storage:", err)
 		return "", fmt.Errorf("error creating directory: %v", err)
 	}
 
-	// Save the decoded image data to a file
-	err = os.WriteFile(imagePath, data, os.ModePerm)
-	if err != nil {
+	// Save the uploaded file
+	if err := c.SaveUploadedFile(file, imagePath); err != nil {
 		log.Println("Error saving image to file:", err)
 		return "", fmt.Errorf("error saving image to file: %v", err)
 	}
@@ -78,7 +65,7 @@ func SaveBase64Image(base64Data string) (string, error) {
 }
 
 // InsertEvent inserts the event into the events table and the image file paths into the event_images table.
-func InsertEvent(db *sql.DB, event Event) error {
+func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 	log.Println("Starting transaction for event:", event.EventID)
 	tx, err := db.Begin()
 	if err != nil {
@@ -98,16 +85,15 @@ func InsertEvent(db *sql.DB, event Event) error {
 		return err
 	}
 
-	// Insert images with file paths (no alt_text in database)
+	// Insert images with file paths
 	queryImage := `
 		INSERT INTO event_images (id, event_id, file_path) 
 		VALUES ($1, $2, $3)
 	`
-	for _, img := range event.Images {
-		log.Printf("Processing image with base64 data: %s\n", img.Data)
-
+	files := c.Request.MultipartForm.File["images"]
+	for _, file := range files {
 		// Save the image and get the file path
-		imagePath, err := SaveBase64Image(img.Data)
+		imagePath, err := SaveImage(file, c)
 		if err != nil {
 			log.Println("Error saving image:", err)
 			tx.Rollback()
@@ -115,8 +101,8 @@ func InsertEvent(db *sql.DB, event Event) error {
 		}
 
 		// Insert image data into the database
-		img.ID = uuid.New().String()                                   // Generate a new UUID for the image ID
-		_, err = tx.Exec(queryImage, img.ID, event.EventID, imagePath) // Insert image file path
+		imageID := uuid.New().String()
+		_, err = tx.Exec(queryImage, imageID, event.EventID, imagePath)
 		if err != nil {
 			log.Println("Error inserting image data:", err)
 			tx.Rollback()
@@ -147,44 +133,82 @@ func InsertEvent(db *sql.DB, event Event) error {
  *    - Returns complete event data including images
  */
 func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
-	// Remove the static route registration since it's already in main.go
-	// router.Static("/images", "./images")
-
-	// POST route to create an event
 	router.POST("/post_event", func(c *gin.Context) {
 		log.Println("Received POST request for /post_event")
 
-		var req Event
-		// Bind the JSON request body to the Event struct
-		if err := c.ShouldBindJSON(&req); err != nil {
-			log.Println("Error binding JSON:", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// Parse multipart form
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32 MB max
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse form"})
 			return
 		}
 
-		// Ensure images slice is not nil
-		if req.Images == nil {
-			req.Images = []ImageModel{}
+		// Parse authorID as integer
+		authorID, err := strconv.Atoi(c.PostForm("authorID"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid authorID"})
+			return
 		}
 
-		// Validate required EventID
-		if req.EventID == "" {
-			log.Println("EventID is required")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "EventID is required"})
+		// Parse eventDate in ISO format
+		eventDate, err := time.Parse("2006-01-02T15:04:05.000Z", c.PostForm("eventDate"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event date format"})
 			return
+		}
+
+		// Create event from form data
+		event := Event{
+			EventID:          c.PostForm("eventID"),
+			AuthorID:         authorID,
+			AuthorName:       c.PostForm("authorName"),
+			Title:            c.PostForm("title"),
+			EventDescription: c.PostForm("eventDescription"),
+			Address:          c.PostForm("address"),
+			EventDate:        eventDate,
+			IsWholeDay:       c.PostForm("isWholeDay") == "true",
+		}
+
+		// Parse optional time fields in ISO format
+		if startTime := c.PostForm("startTime"); startTime != "" {
+			t, err := time.Parse("2006-01-02T15:04:05.000Z", startTime)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid start time format"})
+				return
+			}
+			event.StartTime = &t
+		}
+		if endTime := c.PostForm("endTime"); endTime != "" {
+			t, err := time.Parse("2006-01-02T15:04:05.000Z", endTime)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid end time format"})
+				return
+			}
+			event.EndTime = &t
 		}
 
 		// Insert the event (and images) into the database
-		if err := InsertEvent(db, req); err != nil {
+		if err := InsertEvent(db, event, c); err != nil {
 			log.Println("Failed to insert event:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert event: " + err.Error()})
 			return
 		}
 
-		// Only return a success message, no need to return the entire event
-		log.Println("Event inserted successfully:", req.EventID)
-		c.JSON(http.StatusCreated, gin.H{"message": "Event created successfully", "eventID": req.EventID})
+		// Return success message
+		log.Println("Event inserted successfully:", event.EventID)
+		c.JSON(http.StatusCreated, gin.H{"message": "Event created successfully", "eventID": event.EventID})
 	})
+}
+
+// Helper function to parse integers
+func parseInt(s string) int {
+	i, _ := strconv.Atoi(s)
+	return i
+}
+
+// Helper function to parse time
+func parseTime(s string) time.Time {
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
 }
 
 // EventWithoutImages represents the event data structure without images.
@@ -344,63 +368,34 @@ func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
 		return nil, err
 	}
 
-	// Ensure startTime and endTime are always included in the response
-	// Assign the values even if they are nil, so they are always returned in the response
-	// Explicitly setting startTime and endTime to null if they are nil
-	if startTime == nil {
-		event.StartTime = nil // Set it to nil to represent JSON null
-	} else {
-		event.StartTime = startTime
-	}
+	// Set startTime and endTime
+	event.StartTime = startTime
+	event.EndTime = endTime
 
-	if endTime == nil {
-		event.EndTime = nil // Set it to nil to represent JSON null
-	} else {
-		event.EndTime = endTime
-	}
-
-	// Fetch image paths for the event and initialize images as an empty array
-	var images []ImageModel
+	// Fetch image paths for the event
 	rows, err := db.Query(imagesQuery, eventID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	// Collect image paths if any
+	// Initialize images slice
+	event.Images = []ImageModel{}
+
+	// Collect image paths
 	for rows.Next() {
-		var imagePath string
-		if err := rows.Scan(&imagePath); err != nil {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
 			return nil, err
 		}
-
-		// Ensure the path starts with a forward slash for consistency
-		if !strings.HasPrefix(imagePath, "/") {
-			imagePath = "/" + imagePath
-		}
-
-		// Fix path if it contains double slashes
-		imagePath = strings.ReplaceAll(imagePath, "//", "/")
-
-		images = append(images, ImageModel{Data: imagePath})
+		event.Images = append(event.Images, ImageModel{
+			FilePath: filePath,
+		})
 	}
 
-	// If no images were found, set images to an empty array, not null
-	if len(images) == 0 {
-		images = []ImageModel{} // Ensure images is an empty slice, not nil
-	}
-
-	// Set the images to the event (it will be an empty array if no images are found)
-	event.Images = images
-
-	// Check for errors after iterating over rows
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// Print the event data before returning it (for debugging)
-	fmt.Printf("Fetched event: %+v\n", event)
-
-	// Return the event with images, startTime, and endTime
 	return &event, nil
 }

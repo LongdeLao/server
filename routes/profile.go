@@ -263,7 +263,7 @@ func handleProfilePictureUpload(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Check file type (optional)
+		// Check file type
 		extension := filepath.Ext(file.Filename)
 		if extension != ".jpg" && extension != ".jpeg" && extension != ".png" {
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -275,50 +275,89 @@ func handleProfilePictureUpload(db *sql.DB) gin.HandlerFunc {
 		// Ensure profile_pictures directory exists
 		profilePicDir := "profile_pictures"
 		if _, err := os.Stat(profilePicDir); os.IsNotExist(err) {
-			os.Mkdir(profilePicDir, 0755)
+			if err := os.MkdirAll(profilePicDir, 0755); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to create directory",
+				})
+				return
+			}
 		}
 
-		// Create filename using userId
-		filename := fmt.Sprintf("%d.png", userId)
+		// Start a transaction
+		tx, err := db.Begin()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to start transaction",
+			})
+			return
+		}
+
+		// Step 1: Check if profile picture exists in database
+		var existingFilePath string
+		err = tx.QueryRow("SELECT file_path FROM profile_pictures WHERE user_id = $1", userId).Scan(&existingFilePath)
+
+		// Step 2: If exists, delete the current file from folder and remove database entry
+		if err == nil {
+			// Delete the existing file
+			if err := os.Remove(existingFilePath); err != nil && !os.IsNotExist(err) {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to remove existing file",
+				})
+				return
+			}
+
+			// Delete the database entry
+			_, err = tx.Exec("DELETE FROM profile_pictures WHERE user_id = $1", userId)
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"error": "Failed to remove existing database entry",
+				})
+				return
+			}
+		} else if err != sql.ErrNoRows {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to check existing profile picture",
+			})
+			return
+		}
+
+		// Step 3: Save new file to folder
+		filename := fmt.Sprintf("%d%s", userId, extension)
 		filePath := filepath.Join(profilePicDir, filename)
 
-		// Save the file
 		if err := c.SaveUploadedFile(file, filePath); err != nil {
+			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Failed to save file",
 			})
 			return
 		}
 
-		// Check if the user already has a profile picture
-		var existingId int
-		err = db.QueryRow("SELECT id FROM profile_pictures WHERE user_id = $1", userId).Scan(&existingId)
-
-		var dbErr error
-		if err == sql.ErrNoRows {
-			// Insert new record if user doesn't have a profile picture
-			_, dbErr = db.Exec("INSERT INTO profile_pictures (user_id, file_path) VALUES ($1, $2)",
-				userId, filePath)
-		} else if err == nil {
-			// Update existing record if user already has a profile picture
-			_, dbErr = db.Exec("UPDATE profile_pictures SET file_path = $1 WHERE user_id = $2",
-				filePath, userId)
-		} else {
-			// Handle other DB errors
-			dbErr = err
-		}
-
-		if dbErr != nil {
+		// Step 4: Create new database entry
+		_, err = tx.Exec("INSERT INTO profile_pictures (user_id, file_path) VALUES ($1, $2)",
+			userId, filePath)
+		if err != nil {
+			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Failed to update profile picture in database",
+				"error": "Failed to create database entry",
 			})
 			return
 		}
 
-		// Return the URL for the uploaded file
+		// Commit the transaction
+		if err = tx.Commit(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to commit changes",
+			})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"message":         "Profile picture uploaded successfully",
-			"profile_picture": fmt.Sprintf("/profile_pictures/%s", filename),
+			"profile_picture": fmt.Sprintf("/profile_pictures/%d%s", userId, extension),
 		})
 	}
 }
