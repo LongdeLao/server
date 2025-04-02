@@ -98,10 +98,11 @@ func loginHandler(c *gin.Context) {
 		return
 	}
 
+	
 	conn, err := db.GetConnection()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "DB connection error"})
-		return
+		return 
 	}
 	defer conn.Close()
 
