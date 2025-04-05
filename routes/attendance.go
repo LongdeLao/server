@@ -731,6 +731,169 @@ func GetAllAttendance(c *gin.Context, db *sql.DB) {
 	})
 }
 
+// GetStudentAttendanceHistory retrieves all attendance records for a specific student
+//
+// Endpoint: GET /api/attendance/history/:id
+//
+// Parameters:
+//   - id: The student's user ID (integer)
+//
+// Returns:
+//   - 200 OK: Successfully retrieved attendance history records
+//     {
+//     "success": true,
+//     "records": [
+//     {
+//     "id": int,
+//     "student_id": int,
+//     "status": string,        // "present", "absent", "late", "medical", or "early"
+//     "attendance_date": string, // YYYY-MM-DD format
+//     "arrived_at": string,    // HH:MM:SS format, null for non-late status
+//     "created_at": string     // timestamp
+//     }
+//     ]
+//     }
+//   - 400 Bad Request: Invalid student ID format
+//   - 404 Not Found: No attendance records found for the student
+//   - 500 Internal Server Error: Database error
+func GetStudentAttendanceHistory(c *gin.Context, db *sql.DB) {
+	studentIDStr := c.Param("id")
+	fmt.Printf("Received request for student attendance history, ID: %s\n", studentIDStr)
+
+	if studentIDStr == "" {
+		fmt.Println("Error: Student ID is empty")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Student ID is required",
+		})
+		return
+	}
+
+	// Convert student ID from string to integer
+	studentID, err := strconv.Atoi(studentIDStr)
+	if err != nil {
+		fmt.Printf("Error converting student ID to integer: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Invalid student ID format: %s", studentIDStr),
+		})
+		return
+	}
+
+	// First, check if the student exists
+	var exists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", studentID).Scan(&exists)
+	if err != nil {
+		fmt.Printf("Error checking if student exists: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error checking if student exists: %v", err),
+		})
+		return
+	}
+
+	if !exists {
+		fmt.Printf("Student not found with ID: %d\n", studentID)
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Student not found with ID: %d", studentID),
+		})
+		return
+	}
+
+	// Query to get attendance history records for the student
+	query := `
+		SELECT 
+			id,
+			student_id,
+			status,
+			attendance_date,
+			arrived_at,
+			created_at
+		FROM attendance_history 
+		WHERE student_id = $1
+		ORDER BY attendance_date DESC
+	`
+
+	rows, err := db.Query(query, studentID)
+	if err != nil {
+		fmt.Printf("Error querying attendance history: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error querying attendance history: %v", err),
+		})
+		return
+	}
+	defer rows.Close()
+
+	var records []gin.H
+	for rows.Next() {
+		var id, studentID int
+		var status string
+		var attendanceDate time.Time
+		var arrivedAt sql.NullTime
+		var createdAt time.Time
+
+		err := rows.Scan(
+			&id,
+			&studentID,
+			&status,
+			&attendanceDate,
+			&arrivedAt,
+			&createdAt,
+		)
+
+		if err != nil {
+			fmt.Printf("Error scanning attendance record: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Error scanning attendance record: %v", err),
+			})
+			return
+		}
+
+		record := gin.H{
+			"id":              id,
+			"student_id":      studentID,
+			"status":          status,
+			"attendance_date": attendanceDate.Format("2006-01-02"),
+			"created_at":      createdAt.Format(time.RFC3339),
+		}
+
+		if arrivedAt.Valid {
+			record["arrived_at"] = arrivedAt.Time.Format("15:04:05")
+		} else {
+			record["arrived_at"] = nil
+		}
+
+		records = append(records, record)
+	}
+
+	if err = rows.Err(); err != nil {
+		fmt.Printf("Error iterating through records: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error iterating through records: %v", err),
+		})
+		return
+	}
+
+	// If no records found
+	if len(records) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"records": []gin.H{},
+			"message": "No attendance history records found for this student",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"records": records,
+	})
+}
+
 // SetupAttendanceRoutes sets up the attendance routes
 func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 	attendanceGroup := router.Group("/attendance")
@@ -749,6 +912,9 @@ func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 		})
 		attendanceGroup.GET("/all", func(c *gin.Context) {
 			GetAllAttendance(c, db)
+		})
+		attendanceGroup.GET("/history/:id", func(c *gin.Context) {
+			GetStudentAttendanceHistory(c, db)
 		})
 	}
 }
