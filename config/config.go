@@ -11,7 +11,7 @@ const (
 
 // APNs configuration
 const (
-	AuthKeyPath = "/Users/longde/Desktop/hsannu-backend/server/key.p8"
+	AuthKeyPath = "key.p8"
 	AuthKeyID   = "BK88TAV8F8"
 	TeamID      = "CNSN2FZNRR"
 	APNSTopic   = "com.leo.hsannu"
