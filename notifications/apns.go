@@ -43,7 +43,7 @@ func InitAPNS() error {
 	}
 
 	// Initialize the client
-	client = apns2.NewTokenClient(token).Production()
+	client = apns2.NewTokenClient(token).Development()
 	initialized = true
 	log.Println("APNs client initialized successfully")
 	return nil
