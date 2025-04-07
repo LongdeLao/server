@@ -487,7 +487,7 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 	var createdAt time.Time
 	err = db.QueryRow(`
 		INSERT INTO messages (conversation_id, sender_id, content, created_at, read) 
-		VALUES ($1, $2, $3, CURRENT_TIMESTAMP, false) 
+		VALUES ($1, $2, $3, (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp, false) 
 		RETURNING id, created_at
 	`, request.ConversationID, request.SenderID, request.Content).Scan(&messageID, &createdAt)
 
@@ -684,7 +684,7 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 	var conversationID int
 	err = tx.QueryRow(`
 		INSERT INTO conversations (created_at) 
-		VALUES (CURRENT_TIMESTAMP) 
+		VALUES ((CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::timestamp) 
 		RETURNING id
 	`).Scan(&conversationID)
 
@@ -792,9 +792,12 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("GetAvailableChatUsers: Processing request for user ID: %s\n", userID)
+
 	// Convert user ID from string to integer
 	userIDInt, err := strconv.Atoi(userID)
 	if err != nil {
+		fmt.Printf("GetAvailableChatUsers: Invalid user ID format: %s, error: %v\n", userID, err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("Invalid user ID format: %s", userID),
@@ -807,6 +810,7 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 	err = db.QueryRow("SELECT role FROM users WHERE id = $1", userIDInt).Scan(&userRole)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			fmt.Printf("GetAvailableChatUsers: User not found with ID: %d\n", userIDInt)
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,
 				"message": fmt.Sprintf("User not found with ID: %d", userIDInt),
@@ -814,12 +818,15 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			return
 		}
 
+		fmt.Printf("GetAvailableChatUsers: Error checking user role: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("Error checking user role: %v", err),
 		})
 		return
 	}
+
+	fmt.Printf("GetAvailableChatUsers: User %d has role: %s\n", userIDInt, userRole)
 
 	var query string
 	var availableRole string
@@ -834,6 +841,7 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 				u.last_name, 
 				u.name, 
 				u.role,
+				u.profile_picture,
 				string_agg(DISTINCT ar.role, ', ') as additional_roles
 			FROM 
 				users u
@@ -842,11 +850,12 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			WHERE 
 				u.role = 'staff'
 			GROUP BY
-				u.id, u.first_name, u.last_name, u.name, u.role
+				u.id, u.first_name, u.last_name, u.name, u.role, u.profile_picture
 			ORDER BY 
 				u.name
 		`
 		availableRole = "staff"
+		fmt.Printf("GetAvailableChatUsers: Student user, looking for staff members\n")
 	} else if userRole == "staff" {
 		query = `
 			SELECT 
@@ -855,6 +864,7 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 				u.last_name, 
 				u.name, 
 				u.role,
+				u.profile_picture,
 				NULL as additional_roles
 			FROM 
 				users u
@@ -864,7 +874,9 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 				u.name
 		`
 		availableRole = "students"
+		fmt.Printf("GetAvailableChatUsers: Staff user, looking for student members\n")
 	} else {
+		fmt.Printf("GetAvailableChatUsers: Invalid user role: %s\n", userRole)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("Invalid user role: %s", userRole),
@@ -874,6 +886,7 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 
 	rows, err := db.Query(query)
 	if err != nil {
+		fmt.Printf("GetAvailableChatUsers: Error querying users: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": fmt.Sprintf("Error querying users: %v", err),
@@ -884,7 +897,14 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 
 	var users []gin.H
 	for rows.Next() {
-		var user User
+		var user struct {
+			ID             int            `json:"id"`
+			FirstName      string         `json:"first_name"`
+			LastName       string         `json:"last_name"`
+			Name           string         `json:"name"`
+			Role           string         `json:"role"`
+			ProfilePicture sql.NullString `json:"profile_picture"`
+		}
 		var additionalRoles sql.NullString
 
 		err := rows.Scan(
@@ -893,10 +913,12 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			&user.LastName,
 			&user.Name,
 			&user.Role,
+			&user.ProfilePicture,
 			&additionalRoles,
 		)
 
 		if err != nil {
+			fmt.Printf("GetAvailableChatUsers: Error scanning user: %v\n", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
 				"message": fmt.Sprintf("Error scanning user: %v", err),
@@ -913,6 +935,11 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			"role":       user.Role,
 		}
 
+		// Add profile picture if present
+		if user.ProfilePicture.Valid {
+			userObj["profile_picture"] = user.ProfilePicture.String
+		}
+
 		// Add additional roles if present
 		if additionalRoles.Valid && additionalRoles.String != "" {
 			userObj["additional_roles"] = strings.Split(additionalRoles.String, ", ")
@@ -922,6 +949,8 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 
 		users = append(users, userObj)
 	}
+
+	fmt.Printf("GetAvailableChatUsers: Found %d available %s for user %d\n", len(users), availableRole, userIDInt)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

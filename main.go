@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"server/config" // Your configuration package.
+	"server/config"        // Your configuration package.
 	"server/notifications" // Import the notifications package
-	"server/routes" // Adjust the import path based on your module.
+	"server/routes"        // Adjust the import path based on your module.
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq" // PostgreSQL driver.
