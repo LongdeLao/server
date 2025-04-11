@@ -16,7 +16,7 @@ type LeaveRequest struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 	RespondedBy       *int       `json:"responded_by"`
 	ResponseTime      *time.Time `json:"response_time"`
-	LiveActivityID    *string    `json:"live_activity_id"`
+	LiveActivityId    *string    `json:"live_activity_id"`
 	LiveActivityToken *string    `json:"live_activity_token"`
 }
 

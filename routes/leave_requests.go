@@ -87,7 +87,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			if err := rows.Scan(
 				&req.ID, &req.StudentID, &req.StudentName, &req.RequestType,
 				&req.Reason, &req.Status, &req.CreatedAt, &req.UpdatedAt,
-				&req.RespondedBy, &req.ResponseTime, &req.LiveActivityID, &req.LiveActivityToken); err != nil {
+				&req.RespondedBy, &req.ResponseTime, &req.LiveActivityId, &req.LiveActivityToken); err != nil {
 				log.Printf("Error scanning leave request: %v", err)
 				continue
 			}
@@ -136,7 +136,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			if err := rows.Scan(
 				&req.ID, &req.StudentID, &req.StudentName, &req.RequestType,
 				&req.Reason, &req.Status, &req.CreatedAt, &req.UpdatedAt,
-				&req.RespondedBy, &req.ResponseTime, &req.LiveActivityID, &req.LiveActivityToken); err != nil {
+				&req.RespondedBy, &req.ResponseTime, &req.LiveActivityId, &req.LiveActivityToken); err != nil {
 				log.Printf("Error scanning leave request: %v", err)
 				continue
 			}
@@ -193,7 +193,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			SELECT id, live_activity_id, live_activity_token
 			FROM leave_requests
 			WHERE id = $1`, requestId).Scan(
-			&existingRequest.ID, &existingRequest.LiveActivityID, &existingRequest.LiveActivityToken)
+			&existingRequest.ID, &existingRequest.LiveActivityId, &existingRequest.LiveActivityToken)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -219,7 +219,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
 			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
 			&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt, &leaveRequest.RespondedBy,
-			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityID, &leaveRequest.LiveActivityToken)
+			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -239,7 +239,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		}
 
 		// If we have live activity info, send push notification
-		if leaveRequest.LiveActivityID != nil && leaveRequest.LiveActivityToken != nil {
+		if leaveRequest.LiveActivityId != nil && leaveRequest.LiveActivityToken != nil {
 			// Send a push notification to update the Live Activity
 			go sendLiveActivityUpdate(leaveRequest, updateData.StaffName, responseTime)
 		}
@@ -273,7 +273,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
 			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
 			&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt, &leaveRequest.RespondedBy,
-			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityID, &leaveRequest.LiveActivityToken)
+			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -312,7 +312,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		}
 
 		var updateData struct {
-			LiveActivityID    string `json:"live_activity_id" binding:"required"`
+			LiveActivityId    string `json:"live_activity_id" binding:"required"`
 			LiveActivityToken string `json:"live_activity_token" binding:"required"`
 		}
 
@@ -326,7 +326,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 
 		// Log the received Live Activity token for debugging
 		log.Printf("🎯 Received Live Activity token for request ID %d:", requestId)
-		log.Printf("Activity ID: %s", updateData.LiveActivityID)
+		log.Printf("Activity ID: %s", updateData.LiveActivityId)
 		log.Printf("Token: %s", updateData.LiveActivityToken)
 
 		// Update the live activity information
@@ -338,11 +338,11 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			RETURNING id, student_id, student_name, request_type, reason, status, 
 			          created_at, updated_at, responded_by, response_time, 
 			          live_activity_id, live_activity_token`,
-			updateData.LiveActivityID, updateData.LiveActivityToken, requestId).Scan(
+			updateData.LiveActivityId, updateData.LiveActivityToken, requestId).Scan(
 			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
 			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
 			&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt, &leaveRequest.RespondedBy,
-			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityID, &leaveRequest.LiveActivityToken)
+			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -380,12 +380,12 @@ type LiveActivityPayload struct {
 			RespondedBy  string    `json:"respondedBy"`
 		} `json:"content-state"`
 	} `json:"aps"`
-	ActivityID string `json:"activity-id"`
+	ActivityId string `json:"activity-id"`
 }
 
 // Send a push notification to update a Live Activity
 func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, responseTime time.Time) {
-	if request.LiveActivityID == nil || request.LiveActivityToken == nil {
+	if request.LiveActivityId == nil || request.LiveActivityToken == nil {
 		log.Println("⚠️ Missing Live Activity info for leave request:", request.ID)
 		return
 	}
@@ -397,7 +397,7 @@ func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, respo
 	payload.APS.ContentState.Status = request.Status
 	payload.APS.ContentState.ResponseTime = responseTime
 	payload.APS.ContentState.RespondedBy = staffName
-	payload.ActivityID = *request.LiveActivityID
+	payload.ActivityId = *request.LiveActivityId
 
 	// Convert payload to JSON
 	jsonPayload, err := json.Marshal(payload)
