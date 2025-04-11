@@ -221,3 +221,46 @@ func SendLiveActivityUpdate(activityToken string, status string, responseTime ti
 
 	return nil
 }
+
+// SendAPNsNotification sends a push notification with a custom JSON payload
+func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, isLiveActivity bool) (string, error) {
+	if !initialized {
+		if err := InitAPNS(); err != nil {
+			return "", err
+		}
+	}
+
+	// Validate device token
+	if deviceToken == "" {
+		return "", fmt.Errorf("empty device token")
+	}
+
+	// Create the notification
+	notification := &apns2.Notification{
+		DeviceToken: deviceToken,
+		Topic:       topic,
+		Payload:     []byte(jsonPayload),
+		Priority:    apns2.PriorityHigh,
+		Expiration:  time.Now().Add(24 * time.Hour),
+	}
+
+	// Set push type if it's a Live Activity notification
+	if isLiveActivity {
+		notification.PushType = apns2.PushTypeLiveActivity
+	}
+
+	// Send the notification
+	res, err := client.Push(notification)
+	if err != nil {
+		return "", fmt.Errorf("failed to send APNs notification: %v", err)
+	}
+
+	// Log the result
+	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
+
+	if res.StatusCode != 200 {
+		return "", fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
+	}
+
+	return fmt.Sprintf("Success - APNs notification sent with status: %d", res.StatusCode), nil
+}

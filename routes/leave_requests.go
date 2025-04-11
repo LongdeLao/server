@@ -2,9 +2,11 @@ package routes
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"server/models"
+	"server/notifications"
 	"strconv"
 	"time"
 
@@ -185,6 +187,25 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		// Get current time for response_time
 		responseTime := time.Now()
 
+		// First get the existing request to check if it has live activity info
+		var existingRequest models.LeaveRequest
+		err = db.QueryRow(`
+			SELECT id, live_activity_id, live_activity_token
+			FROM leave_requests
+			WHERE id = $1`, requestId).Scan(
+			&existingRequest.ID, &existingRequest.LiveActivityID, &existingRequest.LiveActivityToken)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, models.LeaveRequestResponse{
+					Success: false,
+					Message: "Leave request not found",
+				})
+				return
+			}
+			log.Printf("Error getting existing leave request: %v", err)
+		}
+
 		// Update the leave request status
 		var leaveRequest models.LeaveRequest
 		err = db.QueryRow(`
@@ -215,6 +236,12 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 				Message: "Failed to update leave request: " + err.Error(),
 			})
 			return
+		}
+
+		// If we have live activity info, send push notification
+		if leaveRequest.LiveActivityID != nil && leaveRequest.LiveActivityToken != nil {
+			// Send a push notification to update the Live Activity
+			go sendLiveActivityUpdate(leaveRequest, updateData.StaffName, responseTime)
 		}
 
 		// Return the updated leave request
@@ -297,6 +324,11 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
+		// Log the received Live Activity token for debugging
+		log.Printf("🎯 Received Live Activity token for request ID %d:", requestId)
+		log.Printf("Activity ID: %s", updateData.LiveActivityID)
+		log.Printf("Token: %s", updateData.LiveActivityToken)
+
 		// Update the live activity information
 		var leaveRequest models.LeaveRequest
 		err = db.QueryRow(`
@@ -335,4 +367,58 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			Request: &leaveRequest,
 		})
 	})
+}
+
+// Struct for Live Activity update payload
+type LiveActivityPayload struct {
+	APS struct {
+		Event        string `json:"event"`
+		Timestamp    int64  `json:"timestamp"`
+		ContentState struct {
+			Status       string    `json:"status"`
+			ResponseTime time.Time `json:"responseTime"`
+			RespondedBy  string    `json:"respondedBy"`
+		} `json:"content-state"`
+	} `json:"aps"`
+	ActivityID string `json:"activity-id"`
+}
+
+// Send a push notification to update a Live Activity
+func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, responseTime time.Time) {
+	if request.LiveActivityID == nil || request.LiveActivityToken == nil {
+		log.Println("⚠️ Missing Live Activity info for leave request:", request.ID)
+		return
+	}
+
+	// Create the push notification payload
+	payload := LiveActivityPayload{}
+	payload.APS.Event = "update"
+	payload.APS.Timestamp = time.Now().Unix()
+	payload.APS.ContentState.Status = request.Status
+	payload.APS.ContentState.ResponseTime = responseTime
+	payload.APS.ContentState.RespondedBy = staffName
+	payload.ActivityID = *request.LiveActivityID
+
+	// Convert payload to JSON
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("Error marshalling Live Activity payload: %v", err)
+		return
+	}
+
+	log.Printf("📱 Sending Live Activity update for request %d with status %s", request.ID, request.Status)
+	log.Printf("Payload: %s", jsonPayload)
+
+	// The bundle ID for Live Activities needs .push-type.liveactivity appended
+	bundleID := "com.leo.hsannu.push-type.liveactivity"
+	deviceToken := *request.LiveActivityToken
+
+	// Send the push notification
+	resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
+	if err != nil {
+		log.Printf("❌ Error sending Live Activity update: %v", err)
+		return
+	}
+
+	log.Printf("✅ Live Activity update sent successfully: %s", resp)
 }
