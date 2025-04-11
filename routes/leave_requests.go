@@ -344,7 +344,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			SELECT id, student_id, live_activity_id, live_activity_token, status
 			FROM leave_requests
 			WHERE id = $1`, requestId).Scan(
-			&existingRequest.ID, &existingRequest.StudentID, 
+			&existingRequest.ID, &existingRequest.StudentID,
 			&existingRequest.LiveActivityId, &existingRequest.LiveActivityToken,
 			&existingRequest.Status)
 
