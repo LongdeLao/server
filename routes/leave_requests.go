@@ -18,10 +18,12 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 	// Create a new leave request
 	router.POST("/leave-requests", func(c *gin.Context) {
 		var requestData struct {
-			StudentID   int     `json:"student_id" binding:"required"`
-			StudentName string  `json:"student_name" binding:"required"`
-			RequestType string  `json:"request_type" binding:"required"`
-			Reason      *string `json:"reason"`
+			StudentID         int     `json:"student_id" binding:"required"`
+			StudentName       string  `json:"student_name" binding:"required"`
+			RequestType       string  `json:"request_type" binding:"required"`
+			Reason            *string `json:"reason"`
+			LiveActivityId    *string `json:"live_activity_id"`
+			LiveActivityToken *string `json:"live_activity_token"`
 		}
 
 		if err := c.BindJSON(&requestData); err != nil {
@@ -33,17 +35,65 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
-		// Insert the new leave request
+		// Log the request data for debugging
+		log.Printf("Creating leave request for student %s (ID: %d)", requestData.StudentName, requestData.StudentID)
+		log.Printf("Request type: %s", requestData.RequestType)
+		if requestData.Reason != nil {
+			log.Printf("Reason: %s", *requestData.Reason)
+		}
+
+		// Log Live Activity info if provided
+		if requestData.LiveActivityId != nil && requestData.LiveActivityToken != nil {
+			log.Printf("📱 Live Activity ID: %s", *requestData.LiveActivityId)
+			log.Printf("🔑 Live Activity Token: %s", *requestData.LiveActivityToken)
+		} else {
+			log.Printf("⚠️ No Live Activity info provided in the initial request")
+		}
+
+		// Insert the new leave request with live activity info if provided
+		var query string
+		var args []interface{}
+
+		if requestData.LiveActivityId != nil && requestData.LiveActivityToken != nil {
+			// Include live activity columns in the query
+			query = `
+				INSERT INTO leave_requests 
+				(student_id, student_name, request_type, reason, status, live_activity_id, live_activity_token) 
+				VALUES ($1, $2, $3, $4, 'pending', $5, $6) 
+				RETURNING id, student_id, student_name, request_type, reason, status, created_at, updated_at, 
+						  live_activity_id, live_activity_token`
+			args = []interface{}{
+				requestData.StudentID, requestData.StudentName, requestData.RequestType, requestData.Reason,
+				requestData.LiveActivityId, requestData.LiveActivityToken,
+			}
+		} else {
+			// Original query without live activity info
+			query = `
+				INSERT INTO leave_requests 
+				(student_id, student_name, request_type, reason, status) 
+				VALUES ($1, $2, $3, $4, 'pending') 
+				RETURNING id, student_id, student_name, request_type, reason, status, created_at, updated_at`
+			args = []interface{}{
+				requestData.StudentID, requestData.StudentName, requestData.RequestType, requestData.Reason,
+			}
+		}
+
+		// Execute the query based on which fields we're using
 		var leaveRequest models.LeaveRequest
-		err := db.QueryRow(`
-			INSERT INTO leave_requests 
-			(student_id, student_name, request_type, reason, status) 
-			VALUES ($1, $2, $3, $4, 'pending') 
-			RETURNING id, student_id, student_name, request_type, reason, status, created_at, updated_at`,
-			requestData.StudentID, requestData.StudentName, requestData.RequestType, requestData.Reason).Scan(
-			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
-			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
-			&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt)
+		var err error
+
+		if requestData.LiveActivityId != nil && requestData.LiveActivityToken != nil {
+			err = db.QueryRow(query, args...).Scan(
+				&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
+				&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
+				&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt,
+				&leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
+		} else {
+			err = db.QueryRow(query, args...).Scan(
+				&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
+				&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
+				&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt)
+		}
 
 		if err != nil {
 			log.Printf("Error creating leave request: %v", err)
@@ -52,6 +102,14 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 				Message: "Failed to create leave request: " + err.Error(),
 			})
 			return
+		}
+
+		log.Printf("✅ Successfully created leave request #%d for %s", leaveRequest.ID, leaveRequest.StudentName)
+
+		// Log Live Activity info if it was saved
+		if leaveRequest.LiveActivityId != nil && leaveRequest.LiveActivityToken != nil {
+			log.Printf("📱 Saved Live Activity ID: %s", *leaveRequest.LiveActivityId)
+			log.Printf("🔑 Saved Live Activity Token: %s", *leaveRequest.LiveActivityToken)
 		}
 
 		// Return the created leave request
