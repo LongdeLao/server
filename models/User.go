@@ -17,7 +17,7 @@ type User struct {
 	FirstName       string   `json:"first_name"`
 	LastName        string   `json:"last_name"`
 	DeviceID        string   `json:"device_id"`
-	Status          string   `json:"status"`           // User account status (active, inactive, suspended, etc.)
+	Status          string   `json:"status"` // User account status (active, inactive, suspended, etc.)
 }
 
 // GetAllUsers retrieves all users from the database
@@ -65,4 +65,40 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	}
 
 	return users, nil
+}
+
+// UserExistsByEmail checks if a user with the given email exists
+func UserExistsByEmail(db *sql.DB, email string) (bool, error) {
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)`
+	err := db.QueryRow(query, email).Scan(&exists)
+	return exists, err
+}
+
+// GetUserByEmail retrieves a user by their email address
+func GetUserByEmail(db *sql.DB, email string) (*User, error) {
+	var user User
+	query := `
+		SELECT id, first_name, last_name, name, username, 
+		       password, role, device_id, email, status
+		FROM users
+		WHERE email = $1
+	`
+	err := db.QueryRow(query, email).Scan(
+		&user.ID,
+		&user.FirstName,
+		&user.LastName,
+		&user.Name,
+		&user.Username,
+		&user.Password,
+		&user.Role,
+		&user.DeviceID,
+		&user.Email,
+		&user.Status,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &user, nil
 }

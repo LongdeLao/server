@@ -8,6 +8,7 @@ import (
 	"net/http"
 	db "server/database"
 	"server/models"
+	"server/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -98,11 +99,10 @@ func loginHandler(c *gin.Context) {
 		return
 	}
 
-	
 	conn, err := db.GetConnection()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "DB connection error"})
-		return 
+		return
 	}
 	defer conn.Close()
 
@@ -118,7 +118,35 @@ func loginHandler(c *gin.Context) {
 		return
 	}
 
-	if user.Password != loginData.Password {
+	// Check if password is already hashed (for legacy support)
+	passwordIsValid := false
+	if utils.IsHashedPassword(user.Password) {
+		// Verify the password using the hash
+		passwordIsValid, err = utils.VerifyPassword(loginData.Password, user.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Password verification error"})
+			return
+		}
+	} else {
+		// Legacy plaintext password comparison (fallback)
+		passwordIsValid = (user.Password == loginData.Password)
+
+		// Automatically upgrade to hashed password if logging in with plain text
+		if passwordIsValid {
+			hashedPassword, err := utils.HashPassword(loginData.Password)
+			if err == nil {
+				// Update the user's password to the hashed version
+				_, err = conn.Exec("UPDATE users SET password = $1 WHERE id = $2", hashedPassword, user.ID)
+				if err != nil {
+					fmt.Printf("Failed to upgrade password to hashed version: %v\n", err)
+				} else {
+					fmt.Printf("Upgraded user %s to hashed password\n", user.Username)
+				}
+			}
+		}
+	}
+
+	if !passwordIsValid {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}

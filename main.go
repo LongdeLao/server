@@ -4,16 +4,21 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"server/config"        // Your configuration package.
 	"server/notifications" // Import the notifications package
 	"server/routes"        // Adjust the import path based on your module.
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq" // PostgreSQL driver.
 )
 
 func main() {
+	// Initialize random number generator
+	rand.Seed(time.Now().UnixNano())
+	
 	// Initialize the Gin router.
 	router := gin.Default()
 
@@ -50,6 +55,7 @@ func main() {
 
 	// Register your routes under the API router group
 	routes.RegisterLoginRoute(apiRouter)
+	routes.RegisterAuthRoutes(apiRouter, db)
 	routes.RegisterEventRoutes(apiRouter, db)
 	routes.RegisterGetAllEvents(apiRouter, db)
 	routes.RegisterGetEventByID(apiRouter, db)

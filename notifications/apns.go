@@ -1,6 +1,7 @@
 package notifications
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -137,6 +138,85 @@ func SendRefreshNotification(deviceToken string, refreshType string) error {
 
 	if res.StatusCode != 200 {
 		return fmt.Errorf("silent notification failed with status %d: %s", res.StatusCode, res.Reason)
+	}
+
+	return nil
+}
+
+// SendLiveActivityUpdate sends a push notification to update a Live Activity
+func SendLiveActivityUpdate(activityToken string, status string, responseTime time.Time, respondedBy string) error {
+	if !initialized {
+		if err := InitAPNS(); err != nil {
+			return err
+		}
+	}
+
+	// Validate activity token
+	if activityToken == "" {
+		return fmt.Errorf("empty activity token")
+	}
+
+	// Format response time to ISO8601
+	timeString := responseTime.Format(time.RFC3339)
+
+	// Create a custom payload for Live Activity
+	type ContentState struct {
+		Status       string  `json:"status"`
+		ResponseTime *string `json:"responseTime,omitempty"`
+		RespondedBy  *string `json:"respondedBy,omitempty"`
+	}
+
+	// Prepare content state based on status
+	var contentState ContentState
+	if status == "pending" {
+		contentState = ContentState{
+			Status:       status,
+			ResponseTime: nil,
+			RespondedBy:  nil,
+		}
+	} else {
+		contentState = ContentState{
+			Status:       status,
+			ResponseTime: &timeString,
+			RespondedBy:  &respondedBy,
+		}
+	}
+
+	// Create the Live Activity payload
+	liveActivityPayload := map[string]interface{}{
+		"aps": map[string]interface{}{
+			"event":         "update",
+			"timestamp":     time.Now().Unix(),
+			"content-state": contentState,
+		},
+	}
+
+	// Convert to JSON
+	payloadBytes, err := json.Marshal(liveActivityPayload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal Live Activity payload: %v", err)
+	}
+
+	// Create the notification
+	notification := &apns2.Notification{
+		DeviceToken: activityToken,
+		Topic:       fmt.Sprintf("%s.push-type.liveactivity", config.APNSTopic),
+		Payload:     payloadBytes,
+		Priority:    apns2.PriorityHigh,
+		PushType:    apns2.PushTypeLiveActivity,
+	}
+
+	// Send the notification
+	res, err := client.Push(notification)
+	if err != nil {
+		return fmt.Errorf("failed to send Live Activity update: %v", err)
+	}
+
+	// Log the result
+	log.Printf("Live Activity update sent to token %s: %v", activityToken, res)
+
+	if res.StatusCode != 200 {
+		return fmt.Errorf("Live Activity update failed with status %d: %s", res.StatusCode, res.Reason)
 	}
 
 	return nil
