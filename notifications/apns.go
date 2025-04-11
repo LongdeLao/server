@@ -264,3 +264,57 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 
 	return fmt.Sprintf("Success - APNs notification sent with status: %d", res.StatusCode), nil
 }
+
+// SendLeaveRequestStatusUpdate sends a push notification specifically for leave request status changes
+func SendLeaveRequestStatusUpdate(deviceToken string, activityId string, status string, staffName string) (string, error) {
+	if !initialized {
+		if err := InitAPNS(); err != nil {
+			return "", err
+		}
+	}
+
+	// Validate inputs
+	if deviceToken == "" {
+		return "", fmt.Errorf("empty device token")
+	}
+	
+	if activityId == "" {
+		return "", fmt.Errorf("empty activity ID")
+	}
+	
+	// Get current time for the response time
+	responseTime := time.Now()
+	timeString := responseTime.Format(time.RFC3339)
+	
+	// Create content state with response details
+	contentState := map[string]interface{}{
+		"status":       status,
+		"responseTime": timeString,
+		"respondedBy":  staffName,
+	}
+	
+	// Build the complete payload
+	payload := map[string]interface{}{
+		"aps": map[string]interface{}{
+			"event":         "update",
+			"timestamp":     time.Now().Unix(),
+			"content-state": contentState,
+		},
+		"activity-id": activityId,
+	}
+	
+	// Convert to JSON
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal Live Activity payload: %v", err)
+	}
+	
+	// Log the outgoing payload for debugging
+	log.Printf("📱 Sending Live Activity status update: %s", string(payloadBytes))
+	
+	// The bundle ID for Live Activities needs .push-type.liveactivity appended
+	bundleID := fmt.Sprintf("%s.push-type.liveactivity", config.APNSTopic)
+	
+	// Send the notification using our existing method
+	return SendAPNsNotification(deviceToken, bundleID, string(payloadBytes), true)
+}

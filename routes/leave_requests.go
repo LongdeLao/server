@@ -3,6 +3,7 @@ package routes
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"server/models"
@@ -303,6 +304,277 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		}
 
 		// Return the updated leave request
+		c.JSON(http.StatusOK, models.LeaveRequestResponse{
+			Success: true,
+			Request: &leaveRequest,
+		})
+	})
+
+	// Cancel a leave request (can be done by students)
+	router.PUT("/leave-requests/:requestId/cancel", func(c *gin.Context) {
+		requestIdStr := c.Param("requestId")
+		requestId, err := strconv.Atoi(requestIdStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Invalid request ID",
+			})
+			return
+		}
+
+		var cancelData struct {
+			StudentID int    `json:"student_id" binding:"required"`
+			Reason    string `json:"reason"`
+		}
+
+		if err := c.BindJSON(&cancelData); err != nil {
+			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Invalid request data: " + err.Error(),
+			})
+			return
+		}
+
+		// Get current time for the cancellation timestamp
+		cancellationTime := time.Now()
+
+		// Get the existing request to verify student ID and check if it has live activity info
+		var existingRequest models.LeaveRequest
+		err = db.QueryRow(`
+			SELECT id, student_id, live_activity_id, live_activity_token, status
+			FROM leave_requests
+			WHERE id = $1`, requestId).Scan(
+			&existingRequest.ID, &existingRequest.StudentID, 
+			&existingRequest.LiveActivityId, &existingRequest.LiveActivityToken,
+			&existingRequest.Status)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, models.LeaveRequestResponse{
+					Success: false,
+					Message: "Leave request not found",
+				})
+				return
+			}
+			log.Printf("Error getting existing leave request: %v", err)
+			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Failed to get leave request information",
+			})
+			return
+		}
+
+		// Verify that the student is the owner of the request
+		if existingRequest.StudentID != cancelData.StudentID {
+			c.JSON(http.StatusForbidden, models.LeaveRequestResponse{
+				Success: false,
+				Message: "You are not authorized to cancel this request",
+			})
+			return
+		}
+
+		// Check if the request is already finalized
+		if existingRequest.Status == "approved" || existingRequest.Status == "rejected" || existingRequest.Status == "finished" {
+			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Cannot cancel a request that has already been " + existingRequest.Status,
+			})
+			return
+		}
+
+		// Update the leave request status to cancelled
+		var updatedRequest models.LeaveRequest
+		err = db.QueryRow(`
+			UPDATE leave_requests 
+			SET status = 'cancelled', updated_at = $1, response_time = $1
+			WHERE id = $2
+			RETURNING id, student_id, student_name, request_type, reason, status, 
+					  created_at, updated_at, responded_by, response_time, 
+					  live_activity_id, live_activity_token`,
+			cancellationTime, requestId).Scan(
+			&updatedRequest.ID, &updatedRequest.StudentID, &updatedRequest.StudentName,
+			&updatedRequest.RequestType, &updatedRequest.Reason, &updatedRequest.Status,
+			&updatedRequest.CreatedAt, &updatedRequest.UpdatedAt, &updatedRequest.RespondedBy,
+			&updatedRequest.ResponseTime, &updatedRequest.LiveActivityId, &updatedRequest.LiveActivityToken)
+
+		if err != nil {
+			log.Printf("Error updating leave request: %v", err)
+			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Failed to cancel leave request: " + err.Error(),
+			})
+			return
+		}
+
+		// If we have live activity info, send push notification
+		if updatedRequest.LiveActivityId != nil && updatedRequest.LiveActivityToken != nil {
+			// Send a push notification to update the Live Activity
+			go func() {
+				// Create the push notification payload
+				payload := LiveActivityPayload{}
+				payload.APS.Event = "update"
+				payload.APS.Timestamp = time.Now().Unix()
+				payload.APS.ContentState.Status = "cancelled"
+				payload.APS.ContentState.ResponseTime = cancellationTime
+				payload.APS.ContentState.RespondedBy = "Student"
+				payload.ActivityId = *updatedRequest.LiveActivityId
+
+				// Convert payload to JSON
+				jsonPayload, err := json.Marshal(payload)
+				if err != nil {
+					log.Printf("Error marshalling Live Activity payload: %v", err)
+					return
+				}
+
+				log.Printf("📱 Sending Live Activity update for cancelled request %d", updatedRequest.ID)
+				log.Printf("Payload: %s", jsonPayload)
+
+				// The bundle ID for Live Activities needs .push-type.liveactivity appended
+				bundleID := "com.leo.hsannu.push-type.liveactivity"
+				deviceToken := *updatedRequest.LiveActivityToken
+
+				// Send the push notification
+				resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
+				if err != nil {
+					log.Printf("❌ Error sending Live Activity update: %v", err)
+					return
+				}
+
+				log.Printf("✅ Live Activity update for cancellation sent successfully: %s", resp)
+			}()
+		}
+
+		// Return the updated leave request
+		c.JSON(http.StatusOK, models.LeaveRequestResponse{
+			Success: true,
+			Request: &updatedRequest,
+			Message: "Leave request cancelled successfully",
+		})
+	})
+
+	// Bulk update multiple leave requests (for staff efficiency)
+	router.POST("/leave-requests/bulk-update", func(c *gin.Context) {
+		var bulkUpdateData struct {
+			RequestIDs []int  `json:"request_ids" binding:"required"`
+			Status     string `json:"status" binding:"required"`
+			StaffID    int    `json:"staff_id" binding:"required"`
+			StaffName  string `json:"staff_name"`
+		}
+
+		if err := c.BindJSON(&bulkUpdateData); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Invalid request data: " + err.Error(),
+			})
+			return
+		}
+
+		// Validate status
+		if bulkUpdateData.Status != "approved" && bulkUpdateData.Status != "rejected" && bulkUpdateData.Status != "finished" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "Invalid status value. Must be 'approved', 'rejected', or 'finished'",
+			})
+			return
+		}
+
+		// Get current time for response_time
+		responseTime := time.Now()
+
+		// Prepare a slice to hold updated requests
+		var updatedRequests []models.LeaveRequest
+		var failedRequestIDs []int
+
+		// Process each request ID
+		for _, requestId := range bulkUpdateData.RequestIDs {
+			// Update the leave request status
+			var leaveRequest models.LeaveRequest
+			err := db.QueryRow(`
+				UPDATE leave_requests 
+				SET status = $1, responded_by = $2, response_time = $3, updated_at = $3
+				WHERE id = $4
+				RETURNING id, student_id, student_name, request_type, reason, status, 
+						  created_at, updated_at, responded_by, response_time, 
+						  live_activity_id, live_activity_token`,
+				bulkUpdateData.Status, bulkUpdateData.StaffID, responseTime, requestId).Scan(
+				&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
+				&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
+				&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt, &leaveRequest.RespondedBy,
+				&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
+
+			if err != nil {
+				log.Printf("Error updating leave request %d: %v", requestId, err)
+				failedRequestIDs = append(failedRequestIDs, requestId)
+				continue
+			}
+
+			updatedRequests = append(updatedRequests, leaveRequest)
+
+			// If we have live activity info, send push notification
+			if leaveRequest.LiveActivityId != nil && leaveRequest.LiveActivityToken != nil {
+				// Send a push notification to update the Live Activity
+				go sendLiveActivityUpdate(leaveRequest, bulkUpdateData.StaffName, responseTime)
+			}
+		}
+
+		// Return summary of the operation
+		if len(updatedRequests) > 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success":          true,
+				"updated_requests": updatedRequests,
+				"failed_requests":  failedRequestIDs,
+				"message":          fmt.Sprintf("Updated %d leave requests, %d failed", len(updatedRequests), len(failedRequestIDs)),
+			})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success":         false,
+				"failed_requests": failedRequestIDs,
+				"message":         "Failed to update any leave requests",
+			})
+		}
+	})
+
+	// Get a leave request by activity ID (for iOS Live Activity handling)
+	router.GET("/leave-requests/activity/:activityId", func(c *gin.Context) {
+		activityId := c.Param("activityId")
+		if activityId == "" {
+			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Invalid activity ID",
+			})
+			return
+		}
+
+		var leaveRequest models.LeaveRequest
+		err := db.QueryRow(`
+			SELECT id, student_id, student_name, request_type, reason, status, 
+				   created_at, updated_at, responded_by, response_time, 
+				   live_activity_id, live_activity_token
+			FROM leave_requests 
+			WHERE live_activity_id = $1`, activityId).Scan(
+			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
+			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
+			&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt, &leaveRequest.RespondedBy,
+			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, models.LeaveRequestResponse{
+					Success: false,
+					Message: "Leave request not found for the given activity ID",
+				})
+				return
+			}
+
+			log.Printf("Error getting leave request by activity ID: %v", err)
+			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Failed to get leave request: " + err.Error(),
+			})
+			return
+		}
+
+		// Return the leave request
 		c.JSON(http.StatusOK, models.LeaveRequestResponse{
 			Success: true,
 			Request: &leaveRequest,
