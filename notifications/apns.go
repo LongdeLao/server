@@ -226,7 +226,7 @@ func SendLiveActivityUpdate(activityToken string, status string, responseTime ti
 // SendAPNsNotification sends a push notification with a custom JSON payload
 func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, isLiveActivity bool) (string, error) {
 	log.Printf("🔔 APNS_NOTIFICATION_START: Preparing to send notification")
-	log.Printf("📱 Device Token: %s", deviceToken)
+	log.Printf("📱 Device Token: [REDACTED for logs] Length: %d chars", len(deviceToken))
 	log.Printf("📱 Topic: %s", topic)
 	log.Printf("📱 Is Live Activity: %v", isLiveActivity)
 	log.Printf("📱 Payload: %s", jsonPayload)
@@ -246,9 +246,14 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 		return "", fmt.Errorf("empty device token")
 	}
 
-	// Trim device token if needed
-	deviceToken = trimDeviceToken(deviceToken)
-	log.Printf("🔄 Using device token: %s", deviceToken)
+	// Only trim the token if it's NOT a Live Activity token
+	// Live Activity tokens are much longer (around 160 chars)
+	if !isLiveActivity {
+		deviceToken = trimDeviceToken(deviceToken)
+		log.Printf("🔄 Using trimmed device token length: %d characters", len(deviceToken))
+	} else {
+		log.Printf("🔄 Using original Live Activity token without trimming, length: %d characters", len(deviceToken))
+	}
 
 	// Create the notification
 	notification := &apns2.Notification{
@@ -265,9 +270,14 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 		log.Printf("🔵 Setting push type to Live Activity")
 	}
 
-	// Send the notification
-	log.Printf("📤 APNS_NOTIFICATION_SENDING: Sending to APNS server...")
-	res, err := client.Push(notification)
+	// Send the notification to development environment when in testing
+	log.Printf("📤 APNS_NOTIFICATION_SENDING: Sending to APNS Development environment...")
+
+	// Use a development client for testing
+	// In production, you'll want to switch this based on environment
+	devClient := client.Development()
+
+	res, err := devClient.Push(notification)
 	if err != nil {
 		log.Printf("❌ APNS_NOTIFICATION_ERROR: Failed to push notification: %v", err)
 		return "", fmt.Errorf("failed to send APNs notification: %v", err)
@@ -291,6 +301,18 @@ func trimDeviceToken(token string) string {
 	// Remove any spaces, angle brackets or quotes
 	token = strings.TrimSpace(token)
 	token = strings.Trim(token, "<>\"'")
+
+	// Check if token is unusually long (standard is 64 hex chars)
+	if len(token) > 64 {
+		log.Printf("⚠️ Device token unusually long (%d chars). Original: %s", len(token), token)
+		if len(token) >= 64 {
+			// Try to extract a valid 64-character token from the beginning
+			possibleToken := token[:64]
+			log.Printf("⚠️ Truncating to first 64 chars: %s", possibleToken)
+			return possibleToken
+		}
+	}
+
 	return token
 }
 
