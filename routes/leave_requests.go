@@ -213,15 +213,12 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		requestIdStr := c.Param("requestId")
 		requestId, err := strconv.Atoi(requestIdStr)
 		if err != nil {
-			log.Printf("❌ Invalid request ID format: %s", requestIdStr)
 			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
 				Success: false,
 				Message: "Invalid request ID",
 			})
 			return
 		}
-
-		log.Printf("🔄 Processing status update for leave request ID: %d", requestId)
 
 		var updateData struct {
 			Status    string `json:"status" binding:"required"`
@@ -230,7 +227,6 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		}
 
 		if err := c.BindJSON(&updateData); err != nil {
-			log.Printf("❌ Invalid request data for request ID %d: %v", requestId, err)
 			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
 				Success: false,
 				Message: "Invalid request data: " + err.Error(),
@@ -238,12 +234,8 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
-		log.Printf("📝 Leave request %d status update: Staff #%d (%s) changing status to '%s'",
-			requestId, updateData.StaffID, updateData.StaffName, updateData.Status)
-
 		// Validate status
 		if updateData.Status != "approved" && updateData.Status != "rejected" && updateData.Status != "finished" {
-			log.Printf("❌ Invalid status value for request ID %d: %s", requestId, updateData.Status)
 			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
 				Success: false,
 				Message: "Invalid status value. Must be 'approved', 'rejected', or 'finished'",
@@ -257,42 +249,20 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		// First get the existing request to check if it has live activity info
 		var existingRequest models.LeaveRequest
 		err = db.QueryRow(`
-			SELECT id, student_id, student_name, live_activity_id, live_activity_token
+			SELECT id, live_activity_id, live_activity_token
 			FROM leave_requests
 			WHERE id = $1`, requestId).Scan(
-			&existingRequest.ID, &existingRequest.StudentID, &existingRequest.StudentName,
-			&existingRequest.LiveActivityId, &existingRequest.LiveActivityToken)
+			&existingRequest.ID, &existingRequest.LiveActivityId, &existingRequest.LiveActivityToken)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
-				log.Printf("❌ Leave request not found: ID %d", requestId)
 				c.JSON(http.StatusNotFound, models.LeaveRequestResponse{
 					Success: false,
 					Message: "Leave request not found",
 				})
 				return
 			}
-			log.Printf("❌ Error getting existing leave request %d: %v", requestId, err)
-			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
-				Success: false,
-				Message: "Error retrieving request details: " + err.Error(),
-			})
-			return
-		}
-
-		log.Printf("📋 Found leave request #%d for student #%d (%s)",
-			existingRequest.ID, existingRequest.StudentID, existingRequest.StudentName)
-
-		// Log Live Activity info if available
-		if existingRequest.LiveActivityId != nil {
-			log.Printf("📱 Request has Live Activity ID: %s", *existingRequest.LiveActivityId)
-			if existingRequest.LiveActivityToken != nil {
-				log.Printf("🔑 Request has Live Activity Token: %s", *existingRequest.LiveActivityToken)
-			} else {
-				log.Printf("⚠️ Request has Live Activity ID but NO token!")
-			}
-		} else {
-			log.Printf("⚠️ Request has NO Live Activity info - status update won't trigger notification")
+			log.Printf("Error getting existing leave request: %v", err)
 		}
 
 		// Update the leave request status
@@ -302,8 +272,8 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			SET status = $1, responded_by = $2, response_time = $3, updated_at = $3
 			WHERE id = $4
 			RETURNING id, student_id, student_name, request_type, reason, status, 
-					  created_at, updated_at, responded_by, response_time, 
-					  live_activity_id, live_activity_token`,
+			          created_at, updated_at, responded_by, response_time, 
+			          live_activity_id, live_activity_token`,
 			updateData.Status, updateData.StaffID, responseTime, requestId).Scan(
 			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
 			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
@@ -312,7 +282,6 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 
 		if err != nil {
 			if err == sql.ErrNoRows {
-				log.Printf("❌ Leave request not found during update: ID %d", requestId)
 				c.JSON(http.StatusNotFound, models.LeaveRequestResponse{
 					Success: false,
 					Message: "Leave request not found",
@@ -320,7 +289,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 				return
 			}
 
-			log.Printf("❌ Error updating leave request %d: %v", requestId, err)
+			log.Printf("Error updating leave request: %v", err)
 			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
 				Success: false,
 				Message: "Failed to update leave request: " + err.Error(),
@@ -328,18 +297,10 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
-		log.Printf("✅ Successfully updated leave request #%d to '%s'", leaveRequest.ID, leaveRequest.Status)
-		log.Printf("🧑‍🎓 Student: #%d (%s)", leaveRequest.StudentID, leaveRequest.StudentName)
-		log.Printf("👨‍💼 Responded by: Staff #%d (%s)", updateData.StaffID, updateData.StaffName)
-		log.Printf("⏱️ Response time: %s", responseTime.Format(time.RFC3339))
-
 		// If we have live activity info, send push notification
 		if leaveRequest.LiveActivityId != nil && leaveRequest.LiveActivityToken != nil {
-			log.Printf("📲 Initiating Live Activity update for request #%d...", leaveRequest.ID)
 			// Send a push notification to update the Live Activity
 			go sendLiveActivityUpdate(leaveRequest, updateData.StaffName, responseTime)
-		} else {
-			log.Printf("⚠️ No Live Activity update sent - missing Live Activity info for request #%d", leaveRequest.ID)
 		}
 
 		// Return the updated leave request
@@ -461,38 +422,12 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 				// Convert payload to JSON
 				jsonPayload, err := json.Marshal(payload)
 				if err != nil {
-					log.Printf("❌ Error marshalling Live Activity payload: %v", err)
+					log.Printf("Error marshalling Live Activity payload: %v", err)
 					return
 				}
 
-				// Create a map to verify the JSON structure
-				var jsonMap map[string]interface{}
-				if err := json.Unmarshal(jsonPayload, &jsonMap); err != nil {
-					log.Printf("❌ Error unmarshalling payload for verification: %v", err)
-				} else {
-					// Check critical fields
-					log.Printf("🔍 Verifying JSON structure:")
-					if activityId, ok := jsonMap["activity-id"]; ok {
-						log.Printf("✅ activity-id found at top level: %v", activityId)
-					} else {
-						log.Printf("❌ activity-id NOT found at top level!")
-					}
-
-					if aps, ok := jsonMap["aps"].(map[string]interface{}); ok {
-						log.Printf("✅ aps found at top level")
-						if contentState, ok := aps["content-state"].(map[string]interface{}); ok {
-							log.Printf("✅ content-state found under aps")
-							log.Printf("✅ content-state contains: %v", contentState)
-						} else {
-							log.Printf("❌ content-state NOT found under aps!")
-						}
-					} else {
-						log.Printf("❌ aps NOT found at top level or not an object!")
-					}
-				}
-
 				log.Printf("📱 Sending Live Activity update for cancelled request %d", updatedRequest.ID)
-				log.Printf("📱 Raw JSON Payload: %s", string(jsonPayload))
+				log.Printf("Payload: %s", jsonPayload)
 
 				// The bundle ID for Live Activities needs .push-type.liveactivity appended
 				bundleID := "com.leo.hsannu.push-type.liveactivity"
@@ -767,153 +702,53 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 // Struct for Live Activity update payload
 type LiveActivityPayload struct {
 	APS struct {
-		Timestamp      int64  `json:"timestamp"`
-		AttributesType string `json:"attributes-type"`
-		Attributes     struct {
-			ID          string `json:"id"`
-			StudentName string `json:"studentName"`
-			StudentID   int    `json:"studentId"`
-			RequestTime string `json:"requestTime"`
-			Reason      string `json:"reason"`
-		} `json:"attributes"`
+		Event        string `json:"event"`
+		Timestamp    int64  `json:"timestamp"`
 		ContentState struct {
 			Status       string    `json:"status"`
 			ResponseTime time.Time `json:"responseTime"`
 			RespondedBy  string    `json:"respondedBy"`
 		} `json:"content-state"`
-		Event string `json:"event"`
-		Alert struct {
-			Title string `json:"title"`
-			Body  string `json:"body"`
-		} `json:"alert"`
 	} `json:"aps"`
-	ActivityId string `json:"activity-id"` // Ensure this is at the top level of JSON
+	ActivityId string `json:"activity-id"`
 }
 
 // Send a push notification to update a Live Activity
 func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, responseTime time.Time) {
-	log.Printf("🚀 LIVE ACTIVITY UPDATE: Starting for request #%d", request.ID)
-	log.Printf("📊 Student: #%d (%s)", request.StudentID, request.StudentName)
-	log.Printf("📊 Request Type: %s", request.RequestType)
-	log.Printf("📊 New Status: %s", request.Status)
-	log.Printf("📊 Staff: %s", staffName)
-
 	if request.LiveActivityId == nil || request.LiveActivityToken == nil {
-		log.Printf("❌ CRITICAL ERROR: Missing Live Activity info for leave request #%d", request.ID)
-		log.Printf("📱 Activity ID: %v", request.LiveActivityId)
-		log.Printf("🔑 Token: %v", request.LiveActivityToken)
+		log.Println("⚠️ Missing Live Activity info for leave request:", request.ID)
 		return
 	}
 
-	// Log the token length
-	log.Printf("💡 Live Activity Token length: %d characters", len(*request.LiveActivityToken))
-
-	// Get request timestamp in RFC3339 format
-	requestTimeStr := request.CreatedAt.Format(time.RFC3339)
-
 	// Create the push notification payload
 	payload := LiveActivityPayload{}
-
-	// Set the APS fields
+	payload.APS.Event = "update"
 	payload.APS.Timestamp = time.Now().Unix()
-	payload.APS.AttributesType = "LeaveRequestAttributes"
-
-	// Set the attributes
-	payload.APS.Attributes.ID = *request.LiveActivityId
-	payload.APS.Attributes.StudentName = request.StudentName
-	payload.APS.Attributes.StudentID = request.StudentID
-	payload.APS.Attributes.RequestTime = requestTimeStr
-	payload.APS.Attributes.Reason = func() string {
-		if request.Reason != nil {
-			return *request.Reason
-		}
-		return "No reason provided"
-	}()
-
-	// Set the content state
 	payload.APS.ContentState.Status = request.Status
 	payload.APS.ContentState.ResponseTime = responseTime
 	payload.APS.ContentState.RespondedBy = staffName
-
-	// Set the event and alert
-	payload.APS.Event = "update"
-	payload.APS.Alert.Title = "Leave Request Update"
-	payload.APS.Alert.Body = fmt.Sprintf("Your %s request has been %s", request.RequestType, request.Status)
-
-	// Set the activity ID at the top level
 	payload.ActivityId = *request.LiveActivityId
 
 	// Convert payload to JSON
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("❌ Error marshalling Live Activity payload: %v", err)
+		log.Printf("Error marshalling Live Activity payload: %v", err)
 		return
 	}
 
-	// Create a map to verify the JSON structure
-	var jsonMap map[string]interface{}
-	if err := json.Unmarshal(jsonPayload, &jsonMap); err != nil {
-		log.Printf("❌ Error unmarshalling payload for verification: %v", err)
-	} else {
-		// Check critical fields
-		log.Printf("🔍 Verifying JSON structure:")
-		if activityId, ok := jsonMap["activity-id"]; ok {
-			log.Printf("✅ activity-id found at top level: %v", activityId)
-		} else {
-			log.Printf("❌ activity-id NOT found at top level!")
-		}
-
-		if aps, ok := jsonMap["aps"].(map[string]interface{}); ok {
-			log.Printf("✅ aps found at top level")
-
-			if attributesType, ok := aps["attributes-type"].(string); ok {
-				log.Printf("✅ attributes-type found: %s", attributesType)
-			} else {
-				log.Printf("❌ attributes-type NOT found or not a string!")
-			}
-
-			if attributes, ok := aps["attributes"].(map[string]interface{}); ok {
-				log.Printf("✅ attributes found: %v", attributes)
-			} else {
-				log.Printf("❌ attributes NOT found or not an object!")
-			}
-
-			if contentState, ok := aps["content-state"].(map[string]interface{}); ok {
-				log.Printf("✅ content-state found under aps")
-				log.Printf("✅ content-state contains: %v", contentState)
-			} else {
-				log.Printf("❌ content-state NOT found under aps!")
-			}
-
-			if alert, ok := aps["alert"].(map[string]interface{}); ok {
-				log.Printf("✅ alert found: %v", alert)
-			} else {
-				log.Printf("❌ alert NOT found or not an object!")
-			}
-		} else {
-			log.Printf("❌ aps NOT found at top level or not an object!")
-		}
-	}
-
 	log.Printf("📱 Sending Live Activity update for request %d with status %s", request.ID, request.Status)
-	log.Printf("📱 Raw JSON Payload: %s", string(jsonPayload))
+	log.Printf("Payload: %s", jsonPayload)
 
 	// The bundle ID for Live Activities needs .push-type.liveactivity appended
 	bundleID := "com.leo.hsannu.push-type.liveactivity"
 	deviceToken := *request.LiveActivityToken
 
-	// IMPORTANT: Do not trim or modify the token - use it exactly as received from the device
-
-	// Send the push notification - ensure we're using the Development environment
+	// Send the push notification
 	resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
 	if err != nil {
-		log.Printf("❌ CRITICAL ERROR: Failed to send Live Activity update for request #%d: %v", request.ID, err)
-		log.Printf("❌ Device token length: %d", len(deviceToken))
-		log.Printf("❌ Bundle ID: %s", bundleID)
+		log.Printf("❌ Error sending Live Activity update: %v", err)
 		return
 	}
 
-	log.Printf("✅ SUCCESS: Live Activity update for request #%d sent successfully!", request.ID)
-	log.Printf("✅ APNs Response: %s", resp)
-	log.Printf("✅ Student #%d will be notified about status change to '%s'", request.StudentID, request.Status)
+	log.Printf("✅ Live Activity update sent successfully: %s", resp)
 }
