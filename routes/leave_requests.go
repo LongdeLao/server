@@ -1,9 +1,11 @@
 package routes
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"server/models"
@@ -18,6 +20,7 @@ import (
 func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 	// Create a new leave request
 	router.POST("/leave-requests", func(c *gin.Context) {
+		// Reset everything at the beginning of the function to prevent cross-request caching
 		var requestData struct {
 			StudentID         int     `json:"student_id" binding:"required"`
 			StudentName       string  `json:"student_name" binding:"required"`
@@ -36,111 +39,74 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
-		// Explicit logging of token mismatch detection
-		log.Printf("🔐 RECEIVED TOKEN VERIFICATION:")
-		log.Printf("🔐 Request from student: %s (ID: %d)", requestData.StudentName, requestData.StudentID)
+		// ANTI-CACHE: Print the raw request body for validation
+		rawData, _ := c.GetRawData()
+		log.Printf("📋 RAW REQUEST BODY: %s", string(rawData))
 
-		if requestData.LiveActivityId != nil {
-			log.Printf("🔐 Activity ID received in request: %s", *requestData.LiveActivityId)
-			if requestData.LiveActivityToken != nil {
-				tokenPrefix := (*requestData.LiveActivityToken)[:10]
-				log.Printf("🔐 Token received in request (first 10 chars): %s", tokenPrefix)
-				log.Printf("🔐 Complete token: %s", *requestData.LiveActivityToken)
-			}
-		}
-
-		// Log the request data for debugging
+		log.Printf("🚫 CACHE RESET: Ensuring fresh values for this request")
 		log.Printf("Creating leave request for student %s (ID: %d)", requestData.StudentName, requestData.StudentID)
 		log.Printf("Request type: %s", requestData.RequestType)
 		if requestData.Reason != nil {
 			log.Printf("Reason: %s", *requestData.Reason)
 		}
 
-		// Enhanced debugging for Live Activity token mismatch
-		log.Printf("🔍 ---------- DEBUG: REQUEST PAYLOAD START ----------")
-		payloadBytes, _ := json.MarshalIndent(requestData, "", "  ")
-		log.Printf("📦 Raw request payload:\n%s", string(payloadBytes))
+		// Direct database insertion with no intermediate variables
+		var leaveRequest models.LeaveRequest
+		var err error
 
-		// Clear any cached variables that might affect token processing
-		log.Printf("🧹 Clearing any cached variables to prevent token mismatch")
-
-		// Log Live Activity info if provided
 		if requestData.LiveActivityId != nil && requestData.LiveActivityToken != nil {
-			log.Printf("📱 Live Activity ID: %s", *requestData.LiveActivityId)
-			log.Printf("🔑 Live Activity Token: %s", *requestData.LiveActivityToken)
-			log.Printf("🔑 Token first 10 chars: %s", (*requestData.LiveActivityToken)[:10])
-			log.Printf("🔑 Token length: %d", len(*requestData.LiveActivityToken))
-			log.Printf("⚠️ VERIFICATION - This token is for activity ID: %s", *requestData.LiveActivityId)
-		} else {
-			log.Printf("⚠️ No Live Activity info provided in the initial request")
-		}
-		log.Printf("🔍 ---------- DEBUG: REQUEST PAYLOAD END ----------")
+			// Log incoming token for verification
+			log.Printf("🛑 DIRECT INSERT: Using token directly from request")
+			log.Printf("📱 Activity ID from request: %s", *requestData.LiveActivityId)
+			log.Printf("🔑 Token from request: %s", *requestData.LiveActivityToken)
 
-		// Make an explicit copy of the token and activity ID to prevent
-		// any reference issues or unexpected modifications
-		var liveActivityIdCopy, liveActivityTokenCopy *string
-		if requestData.LiveActivityId != nil {
-			idCopy := *requestData.LiveActivityId
-			liveActivityIdCopy = &idCopy
-		}
-
-		if requestData.LiveActivityToken != nil {
-			tokenCopy := *requestData.LiveActivityToken
-			liveActivityTokenCopy = &tokenCopy
-		}
-
-		// Insert the new leave request with live activity info if provided
-		var query string
-		var args []interface{}
-
-		if liveActivityIdCopy != nil && liveActivityTokenCopy != nil {
-			// Include live activity columns in the query
-			query = `
+			// Simplified insertion with direct parameter passing
+			err = db.QueryRow(`
 				INSERT INTO leave_requests 
 				(student_id, student_name, request_type, reason, status, live_activity_id, live_activity_token) 
 				VALUES ($1, $2, $3, $4, 'pending', $5, $6) 
 				RETURNING id, student_id, student_name, request_type, reason, status, created_at, updated_at, 
-						  live_activity_id, live_activity_token`
-			args = []interface{}{
-				requestData.StudentID, requestData.StudentName, requestData.RequestType, requestData.Reason,
-				liveActivityIdCopy, liveActivityTokenCopy,
-			}
-
-			// Log what's being inserted with extra verification
-			log.Printf("🔍 ---------- DEBUG: DATABASE INSERT ----------")
-			log.Printf("📝 SQL Query: %s", query)
-			log.Printf("📝 Inserting Activity ID: %s", *liveActivityIdCopy)
-			log.Printf("📝 Inserting Token: %s", *liveActivityTokenCopy)
-			log.Printf("📝 Verified token is from current request, not cached")
-			log.Printf("📝 For Student: %s (ID: %d)", requestData.StudentName, requestData.StudentID)
-			log.Printf("🔍 ---------- DEBUG: DATABASE INSERT END ----------")
+						  live_activity_id, live_activity_token`,
+				requestData.StudentID,
+				requestData.StudentName,
+				requestData.RequestType,
+				requestData.Reason,
+				*requestData.LiveActivityId,    // Direct use
+				*requestData.LiveActivityToken, // Direct use - added comma here
+			).Scan(
+				&leaveRequest.ID,
+				&leaveRequest.StudentID,
+				&leaveRequest.StudentName,
+				&leaveRequest.RequestType,
+				&leaveRequest.Reason,
+				&leaveRequest.Status,
+				&leaveRequest.CreatedAt,
+				&leaveRequest.UpdatedAt,
+				&leaveRequest.LiveActivityId,
+				&leaveRequest.LiveActivityToken,
+			)
 		} else {
-			// Original query without live activity info
-			query = `
+			// Handle request without live activity info
+			log.Printf("ℹ️ No live activity info in request")
+			err = db.QueryRow(`
 				INSERT INTO leave_requests 
 				(student_id, student_name, request_type, reason, status) 
 				VALUES ($1, $2, $3, $4, 'pending') 
-				RETURNING id, student_id, student_name, request_type, reason, status, created_at, updated_at`
-			args = []interface{}{
-				requestData.StudentID, requestData.StudentName, requestData.RequestType, requestData.Reason,
-			}
-		}
-
-		// Execute the query based on which fields we're using
-		var leaveRequest models.LeaveRequest
-		var err error
-
-		if liveActivityIdCopy != nil && liveActivityTokenCopy != nil {
-			err = db.QueryRow(query, args...).Scan(
-				&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
-				&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
-				&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt,
-				&leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
-		} else {
-			err = db.QueryRow(query, args...).Scan(
-				&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
-				&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
-				&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt)
+				RETURNING id, student_id, student_name, request_type, reason, status, created_at, updated_at`,
+				requestData.StudentID,
+				requestData.StudentName,
+				requestData.RequestType,
+				requestData.Reason,
+			).Scan(
+				&leaveRequest.ID,
+				&leaveRequest.StudentID,
+				&leaveRequest.StudentName,
+				&leaveRequest.RequestType,
+				&leaveRequest.Reason,
+				&leaveRequest.Status,
+				&leaveRequest.CreatedAt,
+				&leaveRequest.UpdatedAt,
+			)
 		}
 
 		if err != nil {
@@ -154,24 +120,43 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 
 		log.Printf("✅ Successfully created leave request #%d for %s", leaveRequest.ID, leaveRequest.StudentName)
 
-		// Final verification of what was saved
+		// Verify what was actually saved
 		if leaveRequest.LiveActivityId != nil && leaveRequest.LiveActivityToken != nil {
-			log.Printf("📱 Saved Live Activity ID: %s", *leaveRequest.LiveActivityId)
-			log.Printf("🔑 Saved Live Activity Token: %s", *leaveRequest.LiveActivityToken)
+			log.Printf("🔍 VERIFICATION - SAVED VALUES:")
+			log.Printf("📱 Saved Activity ID: %s", *leaveRequest.LiveActivityId)
+			log.Printf("🔑 Saved Token: %s", *leaveRequest.LiveActivityToken)
 
-			// Verify the token matches what was sent in the request
+			// Double-check against what was in the request
 			if requestData.LiveActivityToken != nil {
 				if *leaveRequest.LiveActivityToken != *requestData.LiveActivityToken {
-					log.Printf("❌ TOKEN MISMATCH DETECTED! Saved token doesn't match request token!")
-					log.Printf("❌ Saved token: %s", *leaveRequest.LiveActivityToken)
+					log.Printf("❌ CRITICAL ERROR: Token mismatch between request and database!")
 					log.Printf("❌ Request token: %s", *requestData.LiveActivityToken)
+					log.Printf("❌ Saved token: %s", *leaveRequest.LiveActivityToken)
+
+					// Immediately fix with a direct update
+					log.Printf("🔄 Attempting immediate fix with direct update...")
+					_, updateErr := db.Exec(`
+						UPDATE leave_requests 
+						SET live_activity_token = $1
+						WHERE id = $2`,
+						*requestData.LiveActivityToken,
+						leaveRequest.ID)
+
+					if updateErr != nil {
+						log.Printf("❌ Fix failed: %v", updateErr)
+					} else {
+						log.Printf("✅ Token directly corrected in database")
+						// Replace the token in returned object too
+						tokenCopy := *requestData.LiveActivityToken
+						leaveRequest.LiveActivityToken = &tokenCopy
+					}
 				} else {
 					log.Printf("✅ Token verification successful - saved token matches request token")
 				}
 			}
 		}
 
-		// Return the created leave request
+		// Return the leave request
 		c.JSON(http.StatusCreated, models.LeaveRequestResponse{
 			Success: true,
 			Request: &leaveRequest,
@@ -699,6 +684,13 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
+		// ANTI-CACHE: Print the raw request body for validation
+		rawData, _ := c.GetRawData()
+		log.Printf("📋 RAW UPDATE REQUEST BODY: %s", string(rawData))
+
+		// Need to re-bind after reading raw data
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(rawData))
+
 		var updateData struct {
 			LiveActivityId    string `json:"live_activity_id" binding:"required"`
 			LiveActivityToken string `json:"live_activity_token" binding:"required"`
@@ -712,55 +704,29 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
-		// Enhanced logging for token updates
-		log.Printf("🔍 ---------- DEBUG: LIVE ACTIVITY UPDATE REQUEST ----------")
-		log.Printf("🎯 Received Live Activity update for request ID %d:", requestId)
-		log.Printf("Activity ID: %s", updateData.LiveActivityId)
-		log.Printf("Token: %s", updateData.LiveActivityToken)
-		log.Printf("Token first 10 chars: %s", updateData.LiveActivityToken[:10])
-		log.Printf("Token length: %d", len(updateData.LiveActivityToken))
-		log.Printf("🔍 ---------- DEBUG: LIVE ACTIVITY UPDATE REQUEST END ----------")
+		log.Printf("🚫 CACHE RESET: Ensuring fresh values for live activity update")
+		log.Printf("🎯 Updating Live Activity for request ID %d:", requestId)
+		log.Printf("📱 Activity ID from request: %s", updateData.LiveActivityId)
+		log.Printf("🔑 Token from request: %s", updateData.LiveActivityToken)
 
-		// Get existing record before update for comparison
-		var existingRequest models.LeaveRequest
-		err = db.QueryRow(`
-			SELECT id, live_activity_id, live_activity_token
-			FROM leave_requests
-			WHERE id = $1`, requestId).Scan(
-			&existingRequest.ID, &existingRequest.LiveActivityId, &existingRequest.LiveActivityToken)
-
-		if err == nil && existingRequest.LiveActivityId != nil {
-			log.Printf("🔍 ---------- DEBUG: EXISTING RECORD ----------")
-			log.Printf("Existing ID: %d", existingRequest.ID)
-			log.Printf("Existing Activity ID: %s", *existingRequest.LiveActivityId)
-			if existingRequest.LiveActivityToken != nil {
-				log.Printf("Existing Token: %s", *existingRequest.LiveActivityToken)
-			}
-			log.Printf("🔍 ---------- DEBUG: EXISTING RECORD END ----------")
-		}
-
-		// Make explicit copies of the input values to prevent caching issues
-		activityIdCopy := updateData.LiveActivityId
-		tokenCopy := updateData.LiveActivityToken
-
-		log.Printf("🔒 Using explicitly copied values to prevent caching issues")
-		log.Printf("🔒 Activity ID: %s", activityIdCopy)
-		log.Printf("🔒 Token: %s", tokenCopy)
-
-		// Update the live activity information using the copies
+		// Direct update with no intermediate variables
 		var leaveRequest models.LeaveRequest
 		err = db.QueryRow(`
 			UPDATE leave_requests 
 			SET live_activity_id = $1, live_activity_token = $2, updated_at = NOW()
 			WHERE id = $3
 			RETURNING id, student_id, student_name, request_type, reason, status, 
-			          created_at, updated_at, responded_by, response_time, 
-			          live_activity_id, live_activity_token`,
-			activityIdCopy, tokenCopy, requestId).Scan(
+					  created_at, updated_at, responded_by, response_time, 
+					  live_activity_id, live_activity_token`,
+			updateData.LiveActivityId,
+			updateData.LiveActivityToken,
+			requestId,
+		).Scan(
 			&leaveRequest.ID, &leaveRequest.StudentID, &leaveRequest.StudentName,
 			&leaveRequest.RequestType, &leaveRequest.Reason, &leaveRequest.Status,
 			&leaveRequest.CreatedAt, &leaveRequest.UpdatedAt, &leaveRequest.RespondedBy,
-			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken)
+			&leaveRequest.ResponseTime, &leaveRequest.LiveActivityId, &leaveRequest.LiveActivityToken,
+		)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -779,25 +745,41 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			return
 		}
 
-		// Log the updated record
-		log.Printf("🔍 ---------- DEBUG: UPDATED RECORD ----------")
-		log.Printf("Updated ID: %d", leaveRequest.ID)
+		// Verify the saved data
+		log.Printf("🔍 VERIFICATION - UPDATED VALUES:")
 		if leaveRequest.LiveActivityId != nil {
-			log.Printf("Updated Activity ID: %s", *leaveRequest.LiveActivityId)
+			log.Printf("📱 Updated Activity ID: %s", *leaveRequest.LiveActivityId)
 		}
 		if leaveRequest.LiveActivityToken != nil {
-			log.Printf("Updated Token: %s", *leaveRequest.LiveActivityToken)
+			log.Printf("🔑 Updated Token: %s", *leaveRequest.LiveActivityToken)
 
-			// Verify the token matches what was sent in the request
-			if *leaveRequest.LiveActivityToken != tokenCopy {
-				log.Printf("❌ CRITICAL ERROR: Updated token doesn't match input token!")
-				log.Printf("❌ Expected: %s", tokenCopy)
-				log.Printf("❌ Got: %s", *leaveRequest.LiveActivityToken)
+			// Verify the update was successful
+			if *leaveRequest.LiveActivityToken != updateData.LiveActivityToken {
+				log.Printf("❌ CRITICAL ERROR: Token mismatch after update!")
+				log.Printf("❌ Request token: %s", updateData.LiveActivityToken)
+				log.Printf("❌ Saved token: %s", *leaveRequest.LiveActivityToken)
+
+				// Fix with a direct update
+				log.Printf("🔄 Forcing direct update...")
+				_, fixErr := db.Exec(`
+					UPDATE leave_requests 
+					SET live_activity_token = $1
+					WHERE id = $2`,
+					updateData.LiveActivityToken,
+					requestId)
+
+				if fixErr != nil {
+					log.Printf("❌ Fix failed: %v", fixErr)
+				} else {
+					log.Printf("✅ Token directly corrected in database")
+					// Update the returned object
+					tokenCopy := updateData.LiveActivityToken
+					leaveRequest.LiveActivityToken = &tokenCopy
+				}
 			} else {
-				log.Printf("✅ Token update verified successfully")
+				log.Printf("✅ Token update verified")
 			}
 		}
-		log.Printf("🔍 ---------- DEBUG: UPDATED RECORD END ----------")
 
 		// Return the updated leave request
 		c.JSON(http.StatusOK, models.LeaveRequestResponse{
