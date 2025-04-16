@@ -43,10 +43,13 @@ func InitAPNS() error {
 		TeamID:  config.TeamID,
 	}
 
-	// Initialize the client
+	// Initialize the client - CRITICAL: Explicitly use Development environment
 	client = apns2.NewTokenClient(token).Development()
+
+	// Log which environment we're using
+	log.Println("✅ APNs client initialized in DEVELOPMENT mode")
+
 	initialized = true
-	log.Println("APNs client initialized successfully")
 	return nil
 }
 
@@ -235,28 +238,50 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 		return "", fmt.Errorf("empty device token")
 	}
 
-	// Create the notification
+	// Log what we're about to send - matching shell script exactly
+	log.Printf("🚀 SENDING NOTIFICATION:")
+	log.Printf("DeviceToken: %s", deviceToken)
+	log.Printf("Topic: %s", topic)
+	log.Printf("Payload: %s", jsonPayload)
+	if isLiveActivity {
+		log.Printf("Type: LiveActivity")
+	} else {
+		log.Printf("Type: Standard")
+	}
+
+	// Create the notification exactly as the shell script does
 	notification := &apns2.Notification{
 		DeviceToken: deviceToken,
 		Topic:       topic,
 		Payload:     []byte(jsonPayload),
-		Priority:    apns2.PriorityHigh,
-		Expiration:  time.Now().Add(24 * time.Hour),
+		Priority:    apns2.PriorityHigh, // Shell script uses 10 which is PriorityHigh
 	}
 
-	// Set push type if it's a Live Activity notification
+	// Set push type for Live Activity
 	if isLiveActivity {
 		notification.PushType = apns2.PushTypeLiveActivity
+		// For live activities, add headers that match shell script
+		notification.ApnsID = ""              // Let APNs generate this
+		notification.Expiration = time.Time{} // No expiration
+		notification.CollapseID = ""          // No collapse ID for live activities
 	}
+
+	// Always set development flag explicitly (matching shell script)
+	// This is redundant with client.Development() but ensures we match exactly
+	client.Development()
 
 	// Send the notification
 	res, err := client.Push(notification)
 	if err != nil {
+		log.Printf("❌ Error sending APNs notification: %v", err)
 		return "", fmt.Errorf("failed to send APNs notification: %v", err)
 	}
 
-	// Log the result
-	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
+	// Log the result in detail
+	log.Printf("📱 APNs Response: %+v", res)
+	log.Printf("📱 Status: %d", res.StatusCode)
+	log.Printf("📱 Reason: %s", res.Reason)
+	log.Printf("📱 APNs ID: %s", res.ApnsID)
 
 	if res.StatusCode != 200 {
 		return "", fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
@@ -284,10 +309,10 @@ func SendLeaveRequestStatusUpdate(deviceToken string, activityId string, status 
 
 	// Get current time for the response time
 	responseTime := time.Now()
-	
+
 	// Create content state with response details
 	var contentState map[string]interface{}
-	
+
 	// Only include responseTime and respondedBy for non-pending statuses
 	if status == "pending" {
 		contentState = map[string]interface{}{
@@ -324,7 +349,7 @@ func SendLeaveRequestStatusUpdate(deviceToken string, activityId string, status 
 
 	// The bundle ID for Live Activities needs .push-type.liveactivity appended
 	bundleID := fmt.Sprintf("%s.push-type.liveactivity", config.APNSTopic)
-	
+
 	// Add more detailed logging
 	log.Printf("📲 DETAILED APNS DATA:")
 	log.Printf("Token: %s", deviceToken)

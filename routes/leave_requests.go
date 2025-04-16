@@ -453,14 +453,25 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		if updatedRequest.LiveActivityId != nil && updatedRequest.LiveActivityToken != nil {
 			// Send a push notification to update the Live Activity
 			go func() {
-				// Create the push notification payload
-				payload := LiveActivityPayload{}
-				payload.APS.Event = "update"
-				payload.APS.Timestamp = time.Now().Unix()
-				payload.APS.ContentState.Status = "cancelled"
-				payload.APS.ContentState.ResponseTime = &cancellationTime
-				payload.APS.ContentState.RespondedBy = "Student"
-				payload.ActivityId = *updatedRequest.LiveActivityId
+				// Create a payload that EXACTLY matches the shell script structure
+				timestamp := time.Now().Unix()
+
+				// Create content state with just status for cancelled
+				contentState := map[string]interface{}{
+					"status":       "cancelled",
+					"responseTime": cancellationTime,
+					"respondedBy":  "Student",
+				}
+
+				// Build the exact same structure as the shell script
+				payload := map[string]interface{}{
+					"aps": map[string]interface{}{
+						"event":         "update",
+						"timestamp":     timestamp,
+						"content-state": contentState,
+					},
+					"activity-id": *updatedRequest.LiveActivityId,
+				}
 
 				// Convert payload to JSON
 				jsonPayload, err := json.Marshal(payload)
@@ -828,23 +839,66 @@ func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, respo
 	log.Printf("🔍 Original Token: %s", deviceToken)
 	log.Printf("🔍 Token Length: %d", len(deviceToken))
 
-	// Create the push notification payload
-	payload := LiveActivityPayload{}
-	payload.APS.Event = "update"
-	payload.APS.Timestamp = time.Now().Unix()
-	payload.APS.ContentState.Status = request.Status
+	// Create a payload that EXACTLY matches the shell script structure
+	// This is the key difference - shell script uses a specific format
+	timestamp := time.Now().Unix()
 
-	// CRITICAL FIX: Make responseTime a pointer so it can be null
-	// Don't set ResponseTime for 'pending' status
-	if request.Status != "pending" {
-		payload.APS.ContentState.ResponseTime = &responseTime
+	var contentState map[string]interface{}
+
+	// Handle status-specific payload structure
+	if request.Status == "pending" {
+		contentState = map[string]interface{}{
+			"status": request.Status,
+			// Explicitly omit responseTime and respondedBy for pending
+		}
 	} else {
-		// Leave as nil for pending
-		payload.APS.ContentState.ResponseTime = nil
+		// For approved, rejected, etc.
+		contentState = map[string]interface{}{
+			"status":       request.Status,
+			"responseTime": responseTime, // Let the JSON marshaling handle the formatting
+			"respondedBy":  staffName,
+		}
 	}
 
-	payload.APS.ContentState.RespondedBy = staffName
-	payload.ActivityId = activityId // Use the copied value
+	// Build the exact same structure as the shell script
+	payload := map[string]interface{}{
+		"aps": map[string]interface{}{
+			"event":         "update",
+			"timestamp":     timestamp,
+			"content-state": contentState,
+		},
+		"activity-id": activityId,
+	}
+
+	// Verify our payload structure before sending
+	log.Println("📦 PAYLOAD STRUCTURE CHECK:")
+	if aps, ok := payload["aps"].(map[string]interface{}); ok {
+		log.Println("✅ Found 'aps' key")
+		if event, ok := aps["event"].(string); ok {
+			log.Printf("✅ Found 'event': %s", event)
+		} else {
+			log.Println("❌ Missing or invalid 'event'")
+		}
+
+		if cts, ok := aps["content-state"].(map[string]interface{}); ok {
+			log.Println("✅ Found 'content-state' key")
+			if status, ok := cts["status"].(string); ok {
+				log.Printf("✅ Found 'status': %s", status)
+			} else {
+				log.Println("❌ Missing or invalid 'status'")
+			}
+		} else {
+			log.Println("❌ Missing or invalid 'content-state'")
+		}
+	} else {
+		log.Println("❌ Missing or invalid 'aps'")
+	}
+
+	if actID, ok := payload["activity-id"].(string); ok {
+		log.Printf("✅ Found 'activity-id': %s", actID)
+	} else {
+		log.Println("❌ Missing or invalid 'activity-id'")
+	}
 
 	// Convert payload to JSON
 	jsonPayload, err := json.Marshal(payload)
