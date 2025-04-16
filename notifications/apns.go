@@ -1,10 +1,12 @@
 package notifications
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"server/config"
 	"time"
 
@@ -360,4 +362,140 @@ func SendLeaveRequestStatusUpdate(deviceToken string, activityId string, status 
 
 	// Send the notification using our existing method
 	return SendAPNsNotification(deviceToken, bundleID, string(payloadBytes), true)
+}
+
+// SendAPNsNotificationExact mirrors exactly the shell script curl command
+// Uses direct HTTP requests instead of the APNS library to ensure 1:1 matching
+func SendAPNsNotificationExact(deviceToken string, activityId string, status string, staffName string) (string, error) {
+	// Generate the authentication token
+	authToken, err := generateToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate authentication token: %v", err)
+	}
+
+	// Current timestamp
+	timestamp := time.Now().Unix()
+
+	// Create the exact same payload format as the shell script
+	// Note the responseTime is null exactly as in the shell script
+	payload := map[string]interface{}{
+		"aps": map[string]interface{}{
+			"event":     "update",
+			"timestamp": timestamp,
+			"content-state": map[string]interface{}{
+				"status":       status,
+				"responseTime": nil,
+				"respondedBy":  staffName,
+			},
+		},
+		"activity-id": activityId,
+	}
+
+	// Marshal to JSON
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal payload: %v", err)
+	}
+
+	// Log the JSON payload for debugging
+	log.Printf("📄 JSON PAYLOAD: %s", string(jsonPayload))
+
+	// Create a file with the payload for logging/debugging
+	err = ioutil.WriteFile("payload.json", jsonPayload, 0644)
+	if err != nil {
+		log.Printf("Warning: Could not save payload for debug: %v", err)
+	} else {
+		log.Printf("✅ Payload saved to payload.json for verification")
+	}
+
+	// APNS development URL - EXACTLY as in the shell script
+	url := fmt.Sprintf("https://api.development.push.apple.com/3/device/%s", deviceToken)
+
+	// Bundle ID with push-type.liveactivity suffix
+	bundleID := "com.leo.hsannu.push-type.liveactivity"
+
+	// Create request
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Set headers EXACTLY as in the shell script
+	req.Header.Set("authorization", fmt.Sprintf("Bearer %s", authToken))
+	req.Header.Set("apns-topic", bundleID)
+	req.Header.Set("apns-push-type", "liveactivity")
+	req.Header.Set("apns-priority", "10")
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("apns-development", "true")
+
+	// Log the request details
+	log.Printf("🚀 SENDING APNs REQUEST:")
+	log.Printf("URL: %s", url)
+	log.Printf("HEADERS:")
+	for k, v := range req.Header {
+		log.Printf("  %s: %s", k, v)
+	}
+	log.Printf("PAYLOAD: %s", string(jsonPayload))
+
+	// Create HTTP client with HTTP/2 support
+	client := &http.Client{
+		Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+		},
+		Timeout: 30 * time.Second,
+	}
+
+	// Send request
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	// Log the response
+	log.Printf("📱 APNs Response Status: %d", resp.StatusCode)
+	log.Printf("📱 Response Headers:")
+	for k, v := range resp.Header {
+		log.Printf("  %s: %s", k, v)
+	}
+	log.Printf("📱 Response Body: %s", string(body))
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("APNs notification failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return fmt.Sprintf("Success - APNs notification sent with status: %d", resp.StatusCode), nil
+}
+
+// Generate authentication token exactly as in the shell script
+func generateToken() (string, error) {
+	// Read the private key
+	keyBytes, err := ioutil.ReadFile(config.AuthKeyPath)
+	if err != nil {
+		return "", fmt.Errorf("unable to read APNs key file: %v", err)
+	}
+
+	// Create a new token using the P8 file
+	authKey, err := token.AuthKeyFromBytes(keyBytes)
+	if err != nil {
+		return "", fmt.Errorf("unable to load APNs key: %v", err)
+	}
+
+	// Create the token provider
+	tokenGenerator := &token.Token{
+		AuthKey: authKey,
+		KeyID:   config.AuthKeyID,
+		TeamID:  config.TeamID,
+	}
+
+	// Generate token
+	authToken := tokenGenerator.GenerateIfExpired()
+
+	return authToken, nil
 }

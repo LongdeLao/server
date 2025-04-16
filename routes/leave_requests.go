@@ -453,52 +453,73 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		if updatedRequest.LiveActivityId != nil && updatedRequest.LiveActivityToken != nil {
 			// Send a push notification to update the Live Activity
 			go func() {
-				// Create a payload that EXACTLY matches the shell script structure
-				timestamp := time.Now().Unix()
-
-				// Create content state with just status for cancelled
-				contentState := map[string]interface{}{
-					"status":       "cancelled",
-					"responseTime": cancellationTime,
-					"respondedBy":  "Student",
-				}
-
-				// Build the exact same structure as the shell script
-				payload := map[string]interface{}{
-					"aps": map[string]interface{}{
-						"event":         "update",
-						"timestamp":     timestamp,
-						"content-state": contentState,
-					},
-					"activity-id": *updatedRequest.LiveActivityId,
-				}
-
-				// Convert payload to JSON
-				jsonPayload, err := json.Marshal(payload)
-				if err != nil {
-					log.Printf("Error marshalling Live Activity payload: %v", err)
-					return
-				}
-
-				log.Printf("📱 Sending Live Activity update for cancelled request %d", updatedRequest.ID)
-				log.Printf("Payload: %s", jsonPayload)
-
-				// The bundle ID for Live Activities needs .push-type.liveactivity appended
-				bundleID := "com.leo.hsannu.push-type.liveactivity"
+				activityId := *updatedRequest.LiveActivityId
 				deviceToken := *updatedRequest.LiveActivityToken
 
-				// ENHANCED LOGGING: Log all details about the notification
-				log.Printf("📲 APNS CANCELLATION DETAILS:")
-				log.Printf("Token: %s", deviceToken)
-				log.Printf("Bundle ID: %s", bundleID)
-				log.Printf("Push Type: liveactivity")
-				log.Printf("Activity ID: %s", *updatedRequest.LiveActivityId)
+				log.Printf("🔄 Sending cancellation notification for request %d", updatedRequest.ID)
+				log.Printf("🔄 Activity ID: %s", activityId)
+				log.Printf("🔄 Token: %s", deviceToken)
 
-				// Send the push notification
-				resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
+				// Use our exact shell script implementation
+				resp, err := notifications.SendAPNsNotificationExact(
+					deviceToken,
+					activityId,
+					"cancelled", // Always "cancelled" for this endpoint
+					"Student",   // Always "Student" for cancellations
+				)
+
 				if err != nil {
-					log.Printf("❌ Error sending Live Activity update: %v", err)
-					return
+					log.Printf("❌ Error sending cancellation notification: %v", err)
+
+					// Try fallback approach
+					log.Printf("⚠️ Trying fallback cancellation approach...")
+
+					// Create the exact payload structure
+					timestamp := time.Now().Unix()
+
+					// Create content state with just status for cancelled
+					contentState := map[string]interface{}{
+						"status":       "cancelled",
+						"responseTime": cancellationTime,
+						"respondedBy":  "Student",
+					}
+
+					// Build the exact same structure as the shell script
+					payload := map[string]interface{}{
+						"aps": map[string]interface{}{
+							"event":         "update",
+							"timestamp":     timestamp,
+							"content-state": contentState,
+						},
+						"activity-id": activityId,
+					}
+
+					// Convert payload to JSON
+					jsonPayload, err := json.Marshal(payload)
+					if err != nil {
+						log.Printf("Error marshalling Live Activity payload: %v", err)
+						return
+					}
+
+					log.Printf("📱 Fallback - Sending Live Activity update for cancelled request %d", updatedRequest.ID)
+					log.Printf("Payload: %s", jsonPayload)
+
+					// The bundle ID for Live Activities needs .push-type.liveactivity appended
+					bundleID := "com.leo.hsannu.push-type.liveactivity"
+
+					// ENHANCED LOGGING: Log all details about the notification
+					log.Printf("📲 APNS CANCELLATION DETAILS:")
+					log.Printf("Token: %s", deviceToken)
+					log.Printf("Bundle ID: %s", bundleID)
+					log.Printf("Push Type: liveactivity")
+					log.Printf("Activity ID: %s", activityId)
+
+					// Send the push notification
+					resp, err = notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
+					if err != nil {
+						log.Printf("❌ Error sending Live Activity update (fallback): %v", err)
+						return
+					}
 				}
 
 				log.Printf("✅ Live Activity update for cancellation sent successfully: %s", resp)
@@ -838,93 +859,80 @@ func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, respo
 	log.Printf("🔍 Original Activity ID: %s", activityId)
 	log.Printf("🔍 Original Token: %s", deviceToken)
 	log.Printf("🔍 Token Length: %d", len(deviceToken))
+	log.Printf("🔍 Status: %s", request.Status)
+	log.Printf("🔍 Staff Name: %s", staffName)
 
-	// Create a payload that EXACTLY matches the shell script structure
-	// This is the key difference - shell script uses a specific format
-	timestamp := time.Now().Unix()
+	// Use our new function that exactly mimics the shell script
+	// This completely bypasses the old APNS library and uses direct HTTP
+	resp, err := notifications.SendAPNsNotificationExact(
+		deviceToken,
+		activityId,
+		request.Status,
+		staffName,
+	)
 
-	var contentState map[string]interface{}
-
-	// Handle status-specific payload structure
-	if request.Status == "pending" {
-		contentState = map[string]interface{}{
-			"status": request.Status,
-			// Explicitly omit responseTime and respondedBy for pending
-		}
-	} else {
-		// For approved, rejected, etc.
-		contentState = map[string]interface{}{
-			"status":       request.Status,
-			"responseTime": responseTime, // Let the JSON marshaling handle the formatting
-			"respondedBy":  staffName,
-		}
-	}
-
-	// Build the exact same structure as the shell script
-	payload := map[string]interface{}{
-		"aps": map[string]interface{}{
-			"event":         "update",
-			"timestamp":     timestamp,
-			"content-state": contentState,
-		},
-		"activity-id": activityId,
-	}
-
-	// Verify our payload structure before sending
-	log.Println("📦 PAYLOAD STRUCTURE CHECK:")
-	if aps, ok := payload["aps"].(map[string]interface{}); ok {
-		log.Println("✅ Found 'aps' key")
-		if event, ok := aps["event"].(string); ok {
-			log.Printf("✅ Found 'event': %s", event)
-		} else {
-			log.Println("❌ Missing or invalid 'event'")
-		}
-
-		if cts, ok := aps["content-state"].(map[string]interface{}); ok {
-			log.Println("✅ Found 'content-state' key")
-			if status, ok := cts["status"].(string); ok {
-				log.Printf("✅ Found 'status': %s", status)
-			} else {
-				log.Println("❌ Missing or invalid 'status'")
-			}
-		} else {
-			log.Println("❌ Missing or invalid 'content-state'")
-		}
-	} else {
-		log.Println("❌ Missing or invalid 'aps'")
-	}
-
-	if actID, ok := payload["activity-id"].(string); ok {
-		log.Printf("✅ Found 'activity-id': %s", actID)
-	} else {
-		log.Println("❌ Missing or invalid 'activity-id'")
-	}
-
-	// Convert payload to JSON
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("Error marshalling Live Activity payload: %v", err)
-		return
-	}
-
-	log.Printf("📱 Sending Live Activity update for request %d with status %s", request.ID, request.Status)
-	log.Printf("Payload: %s", jsonPayload)
-
-	// The bundle ID for Live Activities needs .push-type.liveactivity appended
-	bundleID := "com.leo.hsannu.push-type.liveactivity"
-
-	// ENHANCED LOGGING: Log all details about the notification
-	log.Printf("📲 APNS DETAILS:")
-	log.Printf("Token: %s", deviceToken)
-	log.Printf("Bundle ID: %s", bundleID)
-	log.Printf("Push Type: liveactivity")
-	log.Printf("Activity ID: %s", activityId)
-
-	// Send the push notification using the copied token
-	resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
 	if err != nil {
 		log.Printf("❌ Error sending Live Activity update: %v", err)
-		return
+
+		// Try the old method as a fallback
+		log.Printf("⚠️ Trying fallback method...")
+
+		// Create a payload that EXACTLY matches the shell script structure
+		timestamp := time.Now().Unix()
+
+		var contentState map[string]interface{}
+
+		// Handle status-specific payload structure
+		if request.Status == "pending" {
+			contentState = map[string]interface{}{
+				"status": request.Status,
+				// Explicitly omit responseTime and respondedBy for pending
+			}
+		} else {
+			// For approved, rejected, etc.
+			contentState = map[string]interface{}{
+				"status":       request.Status,
+				"responseTime": responseTime, // Let the JSON marshaling handle the formatting
+				"respondedBy":  staffName,
+			}
+		}
+
+		// Build the exact same structure as the shell script
+		payload := map[string]interface{}{
+			"aps": map[string]interface{}{
+				"event":         "update",
+				"timestamp":     timestamp,
+				"content-state": contentState,
+			},
+			"activity-id": activityId,
+		}
+
+		// Convert payload to JSON
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			log.Printf("Error marshalling Live Activity payload: %v", err)
+			return
+		}
+
+		log.Printf("📱 Fallback - Sending Live Activity update for request %d with status %s", request.ID, request.Status)
+		log.Printf("Payload: %s", jsonPayload)
+
+		// The bundle ID for Live Activities needs .push-type.liveactivity appended
+		bundleID := "com.leo.hsannu.push-type.liveactivity"
+
+		// ENHANCED LOGGING: Log all details about the notification
+		log.Printf("📲 APNS DETAILS:")
+		log.Printf("Token: %s", deviceToken)
+		log.Printf("Bundle ID: %s", bundleID)
+		log.Printf("Push Type: liveactivity")
+		log.Printf("Activity ID: %s", activityId)
+
+		// Send the push notification using the copied token
+		resp, err = notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
+		if err != nil {
+			log.Printf("❌ Error sending Live Activity update (fallback): %v", err)
+			return
+		}
 	}
 
 	log.Printf("✅ Live Activity update sent successfully: %s", resp)
