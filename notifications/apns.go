@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"server/config"
+	"strings"
 	"time"
 
 	"github.com/sideshow/apns2"
@@ -224,16 +225,30 @@ func SendLiveActivityUpdate(activityToken string, status string, responseTime ti
 
 // SendAPNsNotification sends a push notification with a custom JSON payload
 func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, isLiveActivity bool) (string, error) {
+	log.Printf("🔔 APNS_NOTIFICATION_START: Preparing to send notification")
+	log.Printf("📱 Device Token: %s", deviceToken)
+	log.Printf("📱 Topic: %s", topic)
+	log.Printf("📱 Is Live Activity: %v", isLiveActivity)
+	log.Printf("📱 Payload: %s", jsonPayload)
+
 	if !initialized {
+		log.Printf("⚠️ APNS client not initialized, attempting initialization")
 		if err := InitAPNS(); err != nil {
+			log.Printf("❌ APNS_NOTIFICATION_ERROR: Failed to initialize APNS client: %v", err)
 			return "", err
 		}
+		log.Printf("✅ APNS client initialized successfully")
 	}
 
 	// Validate device token
 	if deviceToken == "" {
+		log.Printf("❌ APNS_NOTIFICATION_ERROR: Empty device token provided")
 		return "", fmt.Errorf("empty device token")
 	}
+
+	// Trim device token if needed
+	deviceToken = trimDeviceToken(deviceToken)
+	log.Printf("🔄 Using device token: %s", deviceToken)
 
 	// Create the notification
 	notification := &apns2.Notification{
@@ -247,22 +262,36 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 	// Set push type if it's a Live Activity notification
 	if isLiveActivity {
 		notification.PushType = apns2.PushTypeLiveActivity
+		log.Printf("🔵 Setting push type to Live Activity")
 	}
 
 	// Send the notification
+	log.Printf("📤 APNS_NOTIFICATION_SENDING: Sending to APNS server...")
 	res, err := client.Push(notification)
 	if err != nil {
+		log.Printf("❌ APNS_NOTIFICATION_ERROR: Failed to push notification: %v", err)
 		return "", fmt.Errorf("failed to send APNs notification: %v", err)
 	}
 
 	// Log the result
-	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
+	log.Printf("📥 APNS_NOTIFICATION_RESPONSE: Status=%d, ApnsID=%s, Reason=%s",
+		res.StatusCode, res.ApnsID, res.Reason)
 
 	if res.StatusCode != 200 {
-		return "", fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
+		log.Printf("❌ APNS_NOTIFICATION_FAILED: Status %d: %s", res.StatusCode, res.Reason)
+		return res.ApnsID, fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
 	}
 
-	return fmt.Sprintf("Success - APNs notification sent with status: %d", res.StatusCode), nil
+	log.Printf("✅ APNS_NOTIFICATION_SUCCESS: Notification sent successfully, ApnsID=%s", res.ApnsID)
+	return res.ApnsID, nil
+}
+
+// Helper function to trim device token if needed
+func trimDeviceToken(token string) string {
+	// Remove any spaces, angle brackets or quotes
+	token = strings.TrimSpace(token)
+	token = strings.Trim(token, "<>\"'")
+	return token
 }
 
 // SendLeaveRequestStatusUpdate sends a push notification specifically for leave request status changes
