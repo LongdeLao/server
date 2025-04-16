@@ -826,6 +826,87 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 			Request: &leaveRequest,
 		})
 	})
+
+	// Delete a leave request from the database
+	router.DELETE("/leave-requests/:requestId", func(c *gin.Context) {
+		requestIdStr := c.Param("requestId")
+		requestId, err := strconv.Atoi(requestIdStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Invalid request ID",
+			})
+			return
+		}
+
+		var deleteData struct {
+			StudentID int `json:"student_id" binding:"required"`
+		}
+
+		if err := c.BindJSON(&deleteData); err != nil {
+			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Invalid request data: " + err.Error(),
+			})
+			return
+		}
+
+		// Get the existing request to verify student ID and get a copy before deletion
+		var existingRequest models.LeaveRequest
+		err = db.QueryRow(`
+			SELECT id, student_id, student_name, request_type, reason, status, 
+			       created_at, updated_at, responded_by, response_time, 
+			       live_activity_id, live_activity_token
+			FROM leave_requests
+			WHERE id = $1`, requestId).Scan(
+			&existingRequest.ID, &existingRequest.StudentID, &existingRequest.StudentName,
+			&existingRequest.RequestType, &existingRequest.Reason, &existingRequest.Status,
+			&existingRequest.CreatedAt, &existingRequest.UpdatedAt, &existingRequest.RespondedBy,
+			&existingRequest.ResponseTime, &existingRequest.LiveActivityId, &existingRequest.LiveActivityToken)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, models.LeaveRequestResponse{
+					Success: false,
+					Message: "Leave request not found",
+				})
+				return
+			}
+			log.Printf("Error getting existing leave request: %v", err)
+			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Failed to get leave request information",
+			})
+			return
+		}
+
+		// Verify that the student is the owner of the request
+		if existingRequest.StudentID != deleteData.StudentID {
+			c.JSON(http.StatusForbidden, models.LeaveRequestResponse{
+				Success: false,
+				Message: "You are not authorized to delete this request",
+			})
+			return
+		}
+
+		// Delete the leave request from the database
+		_, err = db.Exec(`DELETE FROM leave_requests WHERE id = $1`, requestId)
+		if err != nil {
+			log.Printf("Error deleting leave request: %v", err)
+			c.JSON(http.StatusInternalServerError, models.LeaveRequestResponse{
+				Success: false,
+				Message: "Failed to delete leave request: " + err.Error(),
+			})
+			return
+		}
+
+		// Return success response with the deleted request
+		c.JSON(http.StatusOK, models.LeaveRequestResponse{
+			Success: true,
+			Request: &existingRequest,
+			Message: "Leave request deleted successfully",
+		})
+	})
 }
 
 // Struct for Live Activity update payload
