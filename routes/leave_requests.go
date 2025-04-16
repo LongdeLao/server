@@ -258,10 +258,11 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 		if err != nil {
 			c.JSON(http.StatusBadRequest, models.LeaveRequestResponse{
 				Success: false,
-				Message: "Invalid request ID",
+				Message: "Invalid request ID", 
 			})
 			return
 		}
+
 
 		var updateData struct {
 			Status    string `json:"status" binding:"required"`
