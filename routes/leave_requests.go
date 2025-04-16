@@ -458,7 +458,7 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 				payload.APS.Event = "update"
 				payload.APS.Timestamp = time.Now().Unix()
 				payload.APS.ContentState.Status = "cancelled"
-				payload.APS.ContentState.ResponseTime = cancellationTime
+				payload.APS.ContentState.ResponseTime = &cancellationTime
 				payload.APS.ContentState.RespondedBy = "Student"
 				payload.ActivityId = *updatedRequest.LiveActivityId
 
@@ -475,6 +475,13 @@ func SetupLeaveRequestRoutes(router *gin.RouterGroup, db *sql.DB) {
 				// The bundle ID for Live Activities needs .push-type.liveactivity appended
 				bundleID := "com.leo.hsannu.push-type.liveactivity"
 				deviceToken := *updatedRequest.LiveActivityToken
+
+				// ENHANCED LOGGING: Log all details about the notification
+				log.Printf("📲 APNS CANCELLATION DETAILS:")
+				log.Printf("Token: %s", deviceToken)
+				log.Printf("Bundle ID: %s", bundleID)
+				log.Printf("Push Type: liveactivity")
+				log.Printf("Activity ID: %s", *updatedRequest.LiveActivityId)
 
 				// Send the push notification
 				resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)
@@ -795,9 +802,9 @@ type LiveActivityPayload struct {
 		Event        string `json:"event"`
 		Timestamp    int64  `json:"timestamp"`
 		ContentState struct {
-			Status       string    `json:"status"`
-			ResponseTime time.Time `json:"responseTime"`
-			RespondedBy  string    `json:"respondedBy"`
+			Status       string     `json:"status"`
+			ResponseTime *time.Time `json:"responseTime"`
+			RespondedBy  string     `json:"respondedBy"`
 		} `json:"content-state"`
 	} `json:"aps"`
 	ActivityId string `json:"activity-id"`
@@ -826,7 +833,16 @@ func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, respo
 	payload.APS.Event = "update"
 	payload.APS.Timestamp = time.Now().Unix()
 	payload.APS.ContentState.Status = request.Status
-	payload.APS.ContentState.ResponseTime = responseTime
+
+	// CRITICAL FIX: Make responseTime a pointer so it can be null
+	// Don't set ResponseTime for 'pending' status
+	if request.Status != "pending" {
+		payload.APS.ContentState.ResponseTime = &responseTime
+	} else {
+		// Leave as nil for pending
+		payload.APS.ContentState.ResponseTime = nil
+	}
+
 	payload.APS.ContentState.RespondedBy = staffName
 	payload.ActivityId = activityId // Use the copied value
 
@@ -842,6 +858,13 @@ func sendLiveActivityUpdate(request models.LeaveRequest, staffName string, respo
 
 	// The bundle ID for Live Activities needs .push-type.liveactivity appended
 	bundleID := "com.leo.hsannu.push-type.liveactivity"
+
+	// ENHANCED LOGGING: Log all details about the notification
+	log.Printf("📲 APNS DETAILS:")
+	log.Printf("Token: %s", deviceToken)
+	log.Printf("Bundle ID: %s", bundleID)
+	log.Printf("Push Type: liveactivity")
+	log.Printf("Activity ID: %s", activityId)
 
 	// Send the push notification using the copied token
 	resp, err := notifications.SendAPNsNotification(deviceToken, bundleID, string(jsonPayload), true)

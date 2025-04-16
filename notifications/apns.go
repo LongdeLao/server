@@ -284,16 +284,26 @@ func SendLeaveRequestStatusUpdate(deviceToken string, activityId string, status 
 
 	// Get current time for the response time
 	responseTime := time.Now()
-	timeString := responseTime.Format(time.RFC3339)
-
+	
 	// Create content state with response details
-	contentState := map[string]interface{}{
-		"status":       status,
-		"responseTime": timeString,
-		"respondedBy":  staffName,
+	var contentState map[string]interface{}
+	
+	// Only include responseTime and respondedBy for non-pending statuses
+	if status == "pending" {
+		contentState = map[string]interface{}{
+			"status": status,
+			// No responseTime or respondedBy for pending status
+		}
+	} else {
+		timeString := responseTime.Format(time.RFC3339)
+		contentState = map[string]interface{}{
+			"status":       status,
+			"responseTime": timeString,
+			"respondedBy":  staffName,
+		}
 	}
 
-	// Build the complete payload
+	// Build the complete payload - EXACTLY matching the shell script format
 	payload := map[string]interface{}{
 		"aps": map[string]interface{}{
 			"event":         "update",
@@ -314,6 +324,14 @@ func SendLeaveRequestStatusUpdate(deviceToken string, activityId string, status 
 
 	// The bundle ID for Live Activities needs .push-type.liveactivity appended
 	bundleID := fmt.Sprintf("%s.push-type.liveactivity", config.APNSTopic)
+	
+	// Add more detailed logging
+	log.Printf("📲 DETAILED APNS DATA:")
+	log.Printf("Token: %s", deviceToken)
+	log.Printf("Bundle ID: %s", bundleID)
+	log.Printf("Push Type: liveactivity")
+	log.Printf("Activity ID: %s", activityId)
+	log.Printf("Status: %s", status)
 
 	// Send the notification using our existing method
 	return SendAPNsNotification(deviceToken, bundleID, string(payloadBytes), true)
