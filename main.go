@@ -85,6 +85,7 @@ func main() {
 
 	// Start the server on port 2000.
 	log.Printf("Starting server on port %s...", config.ServerPort)
+	log.Printf("IS IT RUNNING?")
 	if err := router.Run(fmt.Sprintf(":%s", config.ServerPort)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
