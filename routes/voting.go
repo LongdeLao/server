@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"server/models"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
@@ -26,10 +27,6 @@ func SetupVotingRoutes(router *gin.RouterGroup, db *sql.DB) {
 	router.GET("/voting/user-votes/:user_id", getUserVotes(db))
 	router.DELETE("/voting/user-votes/:id", deleteUserVote(db))
 
-	// New endpoints
-	router.GET("/voting/check-vote", checkUserVote(db))
-	router.GET("/voting/results/:event_id", getVoteResults(db))
-
 	// Statistics endpoints
 	router.GET("/voting/statistics/:event_id", getVotingStatistics(db))
 }
@@ -41,14 +38,21 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 		status := c.Query("status")
 		userID := c.Query("user_id")
 
-		// Base query to get voting events
+		// Add debug logging
+		log.Printf("Getting voting events. Status filter: %s, User ID: %s", status, userID)
+
+		// Base query to get voting events - handle NULLs explicitly with COALESCE
 		query := `
-            SELECT ve.id, ve.title, ve.description, ve.deadline, ve.status, 
-                   ve.organizer_id, u.name as organizer_name, 
-                   COALESCE(ar.role_name, 'User') as organizer_role, ve.created_at
+            SELECT ve.id, ve.title, 
+                   COALESCE(ve.description, '') as description, 
+                   ve.deadline, 
+                   ve.status, 
+                   ve.organizer_id, 
+                   COALESCE(u.name, 'Unknown') as organizer_name, 
+                   COALESCE(u.role, 'User') as organizer_role, 
+                   ve.created_at
             FROM voting_events ve
             LEFT JOIN users u ON ve.organizer_id = u.id
-            LEFT JOIN additional_roles ar ON u.id = ar.user_id
             WHERE 1=1
         `
 
@@ -65,9 +69,13 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 		// Order by created_at
 		query += " ORDER BY ve.created_at DESC"
 
+		// Log the final query for debugging
+		log.Printf("SQL Query: %s with args: %v", query, args)
+
 		// Execute the query
 		rows, err := db.Query(query, args...)
 		if err != nil {
+			log.Printf("Error executing SQL query: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
 			return
 		}
@@ -87,9 +95,12 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 				&event.OrganizerRole,
 				&event.CreatedAt,
 			); err != nil {
+				log.Printf("Error scanning event row: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning event: " + err.Error()})
 				return
 			}
+
+			log.Printf("Successfully scanned event ID %d: %s", event.ID, event.Title)
 
 			// Get vote count for this event
 			var voteCount int
@@ -100,6 +111,7 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 				WHERE sv.event_id = $1
 			`, event.ID).Scan(&voteCount)
 			if err != nil && err != sql.ErrNoRows {
+				log.Printf("Error getting vote count for event %d: %v", event.ID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting vote count: " + err.Error()})
 				return
 			}
@@ -110,17 +122,25 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 			var totalUsers int
 			err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
 			if err != nil && err != sql.ErrNoRows {
+				log.Printf("Error getting total users: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting total users: " + err.Error()})
 				return
 			}
 			event.TotalVotes = totalUsers
 
 			// Get sub-votes for this event
-			event.SubVotes = getSubVotesForEvent(db, event.ID, userID)
+			subVotes := getSubVotesForEvent(db, event.ID, userID)
+			if subVotes == nil {
+				// Initialize with empty array instead of nil
+				event.SubVotes = []models.SubVote{}
+			} else {
+				event.SubVotes = subVotes
+			}
 
 			events = append(events, event)
 		}
 
+		log.Printf("Returning %d voting events", len(events))
 		c.JSON(http.StatusOK, events)
 	}
 }
@@ -131,15 +151,21 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 		eventID := c.Param("id")
 		userID := c.Query("user_id")
 
+		log.Printf("Getting voting event by ID: %s, User ID: %s", eventID, userID)
+
 		// Get event details
 		var event models.VotingEvent
 		err := db.QueryRow(`
-			SELECT ve.id, ve.title, ve.description, ve.deadline, ve.status, 
-				   ve.organizer_id, u.name as organizer_name, 
-				   COALESCE(ar.role_name, 'User') as organizer_role, ve.created_at
+			SELECT ve.id, ve.title, 
+				   COALESCE(ve.description, '') as description, 
+				   ve.deadline, 
+				   ve.status, 
+				   ve.organizer_id, 
+				   COALESCE(u.name, 'Unknown') as organizer_name, 
+				   COALESCE(u.role, 'User') as organizer_role, 
+				   ve.created_at
 			FROM voting_events ve
 			LEFT JOIN users u ON ve.organizer_id = u.id
-			LEFT JOIN additional_roles ar ON u.id = ar.user_id
 			WHERE ve.id = $1
 		`, eventID).Scan(
 			&event.ID,
@@ -155,12 +181,16 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 
 		if err != nil {
 			if err == sql.ErrNoRows {
+				log.Printf("Event not found: %s", eventID)
 				c.JSON(http.StatusNotFound, gin.H{"error": "Event not found"})
 			} else {
+				log.Printf("Database error getting event %s: %v", eventID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
 			}
 			return
 		}
+
+		log.Printf("Successfully retrieved event ID %d: %s", event.ID, event.Title)
 
 		// Get vote count
 		var voteCount int
@@ -171,6 +201,7 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 			WHERE sv.event_id = $1
 		`, event.ID).Scan(&voteCount)
 		if err != nil && err != sql.ErrNoRows {
+			log.Printf("Error getting vote count for event %d: %v", event.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting vote count: " + err.Error()})
 			return
 		}
@@ -180,14 +211,22 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 		var totalUsers int
 		err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
 		if err != nil && err != sql.ErrNoRows {
+			log.Printf("Error getting total users: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting total users: " + err.Error()})
 			return
 		}
 		event.TotalVotes = totalUsers
 
 		// Get sub-votes for this event
-		event.SubVotes = getSubVotesForEvent(db, event.ID, userID)
+		subVotes := getSubVotesForEvent(db, event.ID, userID)
+		if subVotes == nil {
+			// Initialize with empty array instead of nil
+			event.SubVotes = []models.SubVote{}
+		} else {
+			event.SubVotes = subVotes
+		}
 
+		log.Printf("Returning event with %d sub-votes", len(event.SubVotes))
 		c.JSON(http.StatusOK, event)
 	}
 }
@@ -201,13 +240,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Extract and validate user ID
-		userID, err := ParseUserID(c.GetHeader("User-ID"))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
 		// Start a transaction
 		tx, err := db.Begin()
 		if err != nil {
@@ -216,11 +248,57 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Create voting event
-		eventID, err := CreateVotingEvent(tx, request, userID)
+		// Extract user ID from the request
+		userIDStr := c.GetHeader("User-ID")
+		if userIDStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "User ID is required"})
+			return
+		}
+		organizerID, err := strconv.Atoi(userIDStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid User ID"})
+			return
+		}
+
+		// Insert voting event
+		var eventID int
+		err = tx.QueryRow(`
+            INSERT INTO voting_events (title, description, deadline, status, organizer_id)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        `, request.Title, request.Description, request.Deadline, request.Status, organizerID).Scan(&eventID)
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create voting event: " + err.Error()})
 			return
+		}
+
+		// Insert sub-votes and options
+		for _, subVoteReq := range request.SubVotes {
+			var subVoteID int
+			err = tx.QueryRow(`
+                INSERT INTO sub_votes (event_id, title, description)
+                VALUES ($1, $2, $3)
+                RETURNING id
+            `, eventID, subVoteReq.Title, subVoteReq.Description).Scan(&subVoteID)
+
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create sub-vote: " + err.Error()})
+				return
+			}
+
+			// Insert options for this sub-vote
+			for _, optionReq := range subVoteReq.Options {
+				_, err = tx.Exec(`
+                    INSERT INTO vote_options (sub_vote_id, text, has_custom_input)
+                    VALUES ($1, $2, $3)
+                `, subVoteID, optionReq.Text, optionReq.HasCustomInput)
+
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create vote option: " + err.Error()})
+					return
+				}
+			}
 		}
 
 		// Commit the transaction
@@ -230,8 +308,8 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 		}
 
 		c.JSON(http.StatusCreated, gin.H{
-			"message":  "Voting event created successfully",
-			"event_id": eventID,
+			"message": "Voting event created successfully",
+			"id":      eventID,
 		})
 	}
 }
@@ -366,35 +444,15 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Extract and validate user ID
-		userID, err := ParseUserID(c.GetHeader("User-ID"))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// Extract user ID from the request
+		userIDStr := c.GetHeader("User-ID")
+		if userIDStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "User ID is required"})
 			return
 		}
-
-		// Validate the voting event (check if active and deadline not passed)
-		_, _, _, err = ValidateVotingEvent(db, voteRequest.SubVoteID)
+		userID, err := strconv.Atoi(userIDStr)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				c.JSON(http.StatusNotFound, gin.H{"error": "Sub-vote not found"})
-			} else {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			}
-			return
-		}
-
-		// Validate that the option exists and belongs to the sub-vote
-		_, err = ValidateVoteOption(db, voteRequest.OptionID, voteRequest.SubVoteID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		// Check if user has already voted in this sub-vote
-		hasVoted, existingVoteID, err := ValidateUserVote(db, userID, voteRequest.SubVoteID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid User ID"})
 			return
 		}
 
@@ -406,25 +464,100 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Submit or update vote
-		if hasVoted {
-			// User has already voted, update their vote
-			err = UpdateExistingVote(tx, existingVoteID, voteRequest.OptionID, voteRequest.CustomInput)
+		// Check if the sub-vote exists and get the event ID
+		var eventID int
+		var deadline time.Time
+		var status string
+		err = tx.QueryRow(`
+			SELECT ve.id, ve.deadline, ve.status
+			FROM sub_votes sv
+			JOIN voting_events ve ON sv.event_id = ve.id
+			WHERE sv.id = $1
+		`, voteRequest.SubVoteID).Scan(&eventID, &deadline, &status)
+
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Sub-vote not found"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
+			}
+			return
+		}
+
+		// Check if the voting event is active and deadline has not passed
+		if status != "active" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "This voting event is not active"})
+			return
+		}
+
+		if time.Now().After(deadline) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "The deadline for this voting event has passed"})
+			return
+		}
+
+		// Check if the option exists and belongs to the specified sub-vote
+		var optionExists bool
+		err = tx.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM vote_options WHERE id = $1 AND sub_vote_id = $2)
+		`, voteRequest.OptionID, voteRequest.SubVoteID).Scan(&optionExists)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
+			return
+		}
+
+		if !optionExists {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Option not found or does not belong to the specified sub-vote"})
+			return
+		}
+
+		// Check if the user has already voted for this sub-vote
+		var existingVoteID int
+		err = tx.QueryRow(`
+			SELECT id FROM user_votes WHERE user_id = $1 AND sub_vote_id = $2
+		`, userID, voteRequest.SubVoteID).Scan(&existingVoteID)
+
+		if err != nil && err != sql.ErrNoRows {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
+			return
+		}
+
+		// If user has already voted, update their vote
+		if err == nil { // User has voted before
+			_, err = tx.Exec(`
+				UPDATE user_votes
+				SET option_id = $1, custom_input = $2
+				WHERE id = $3
+			`, voteRequest.OptionID, voteRequest.CustomInput, existingVoteID)
+
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update vote: " + err.Error()})
 				return
 			}
-		} else {
-			// User has not voted yet, submit new vote
-			err = SubmitNewVote(tx, userID, voteRequest.SubVoteID, voteRequest.OptionID, voteRequest.CustomInput)
+		} else { // User hasn't voted before, insert new vote
+			_, err = tx.Exec(`
+				INSERT INTO user_votes (user_id, sub_vote_id, option_id, custom_input)
+				VALUES ($1, $2, $3, $4)
+			`, userID, voteRequest.SubVoteID, voteRequest.OptionID, voteRequest.CustomInput)
+
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit vote: " + err.Error()})
 				return
 			}
 		}
 
-		// Update vote counts in options table
-		err = UpdateVoteCounts(tx, voteRequest.SubVoteID)
+		// Update vote count in options table
+		// First, recalculate counts for all options in this sub-vote
+		_, err = tx.Exec(`
+			UPDATE vote_options vo
+			SET vote_count = (
+				SELECT COUNT(*) 
+				FROM user_votes uv 
+				WHERE uv.option_id = vo.id
+			)
+			WHERE vo.sub_vote_id = $1
+		`, voteRequest.SubVoteID)
+
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update vote counts: " + err.Error()})
 			return
@@ -436,10 +569,7 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"message": "Vote submitted successfully",
-			"updated": hasVoted,
-		})
+		c.JSON(http.StatusOK, gin.H{"message": "Vote submitted successfully"})
 	}
 }
 
@@ -698,14 +828,16 @@ func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 
 // Helper function to get sub-votes for an event
 func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVote {
+	log.Printf("Getting sub-votes for event ID: %d, User ID: %s", eventID, userID)
+
 	rows, err := db.Query(`
-		SELECT id, event_id, title, description, created_at
+		SELECT id, event_id, title, COALESCE(description, '') as description, created_at
 		FROM sub_votes
 		WHERE event_id = $1
 	`, eventID)
 
 	if err != nil {
-		log.Printf("Error getting sub-votes: %v", err)
+		log.Printf("Error getting sub-votes for event %d: %v", eventID, err)
 		return nil
 	}
 	defer rows.Close()
@@ -718,6 +850,8 @@ func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVot
 			continue
 		}
 
+		log.Printf("Retrieved sub-vote ID %d: %s", subVote.ID, subVote.Title)
+
 		// Get options for this sub-vote
 		optRows, err := db.Query(`
 			SELECT id, sub_vote_id, text, has_custom_input, vote_count, created_at
@@ -726,296 +860,60 @@ func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVot
 		`, subVote.ID)
 
 		if err != nil {
-			log.Printf("Error getting options: %v", err)
-			continue
-		}
-		defer optRows.Close()
+			log.Printf("Error getting options for sub-vote %d: %v", subVote.ID, err)
+			// Continue with empty options rather than skipping the sub-vote entirely
+			subVote.Options = []models.VoteOption{}
+		} else {
+			defer optRows.Close()
 
-		for optRows.Next() {
-			var option models.VoteOption
-			if err := optRows.Scan(&option.ID, &option.SubVoteID, &option.Text, &option.HasCustomInput, &option.VoteCount, &option.CreatedAt); err != nil {
-				log.Printf("Error scanning option: %v", err)
-				continue
+			var options []models.VoteOption
+			for optRows.Next() {
+				var option models.VoteOption
+				if err := optRows.Scan(&option.ID, &option.SubVoteID, &option.Text, &option.HasCustomInput, &option.VoteCount, &option.CreatedAt); err != nil {
+					log.Printf("Error scanning option: %v", err)
+					continue
+				}
+				log.Printf("Retrieved option ID %d: %s for sub-vote %d", option.ID, option.Text, subVote.ID)
+				options = append(options, option)
 			}
-			subVote.Options = append(subVote.Options, option)
+
+			if options == nil {
+				subVote.Options = []models.VoteOption{}
+			} else {
+				subVote.Options = options
+			}
 		}
 
 		// If user ID is provided, get the user's vote for this sub-vote
 		if userID != "" {
-			var userVote models.UserVote
-			err = db.QueryRow(`
-				SELECT id, user_id, sub_vote_id, option_id, custom_input, created_at
-				FROM user_votes
-				WHERE user_id = $1 AND sub_vote_id = $2
-			`, userID, subVote.ID).Scan(&userVote.ID, &userVote.UserID, &userVote.SubVoteID, &userVote.OptionID, &userVote.CustomInput, &userVote.CreatedAt)
+			userIDInt, err := strconv.Atoi(userID)
+			if err != nil {
+				log.Printf("Invalid user ID format: %s - %v", userID, err)
+			} else {
+				var userVote models.UserVote
+				err = db.QueryRow(`
+					SELECT id, user_id, sub_vote_id, option_id, COALESCE(custom_input, '') as custom_input, created_at
+					FROM user_votes
+					WHERE user_id = $1 AND sub_vote_id = $2
+				`, userIDInt, subVote.ID).Scan(&userVote.ID, &userVote.UserID, &userVote.SubVoteID, &userVote.OptionID, &userVote.CustomInput, &userVote.CreatedAt)
 
-			if err == nil {
-				// Maybe add this information to the subVote if needed
-				// For now, we don't do anything with it
+				if err == nil {
+					log.Printf("Found user vote for sub-vote %d: option %d", subVote.ID, userVote.OptionID)
+					// If found user vote, attach it to the subVote as user_vote field
+					subVote.UserVote = &userVote
+				} else if err != sql.ErrNoRows {
+					log.Printf("Error retrieving user vote: %v", err)
+				}
 			}
 		}
 
 		subVotes = append(subVotes, subVote)
 	}
 
+	log.Printf("Returning %d sub-votes for event %d", len(subVotes), eventID)
+
+	if subVotes == nil {
+		return []models.SubVote{}
+	}
 	return subVotes
-}
-
-// checkUserVote checks if a user has already voted in a specific sub-vote
-func checkUserVote(db *sql.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userIDStr := c.Query("user_id")
-		subVoteIDStr := c.Query("sub_vote_id")
-
-		if userIDStr == "" || subVoteIDStr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "User ID and sub vote ID are required"})
-			return
-		}
-
-		userID, err := strconv.Atoi(userIDStr)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-			return
-		}
-
-		subVoteID, err := strconv.Atoi(subVoteIDStr)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid sub vote ID"})
-			return
-		}
-
-		// Check if the user has already voted
-		hasVoted, voteID, err := ValidateUserVote(db, userID, subVoteID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
-			return
-		}
-
-		// If the user has voted, get the details
-		var voteDetails map[string]interface{}
-		if hasVoted {
-			var optionID int
-			var optionText string
-			var customInput sql.NullString
-
-			err := db.QueryRow(`
-				SELECT uv.option_id, vo.text, uv.custom_input
-				FROM user_votes uv
-				JOIN vote_options vo ON uv.option_id = vo.id
-				WHERE uv.id = $1
-			`, voteID).Scan(&optionID, &optionText, &customInput)
-
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting vote details: " + err.Error()})
-				return
-			}
-
-			voteDetails = map[string]interface{}{
-				"vote_id":      voteID,
-				"option_id":    optionID,
-				"option_text":  optionText,
-				"custom_input": customInput.String,
-			}
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"has_voted":    hasVoted,
-			"vote_details": voteDetails,
-		})
-	}
-}
-
-// getVoteResults gets detailed results for a voting event
-func getVoteResults(db *sql.DB) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		eventID := c.Param("event_id")
-
-		// First, check if the event exists
-		var eventExists bool
-		err := db.QueryRow(`
-			SELECT EXISTS(SELECT 1 FROM voting_events WHERE id = $1)
-		`, eventID).Scan(&eventExists)
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
-			return
-		}
-
-		if !eventExists {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Voting event not found"})
-			return
-		}
-
-		// Get event details
-		var event models.VotingEvent
-		err = db.QueryRow(`
-			SELECT ve.id, ve.title, ve.description, ve.deadline, ve.status, 
-				   ve.organizer_id, u.name as organizer_name,
-				   COALESCE(ar.role_name, 'User') as organizer_role, ve.created_at
-			FROM voting_events ve
-			LEFT JOIN users u ON ve.organizer_id = u.id
-			LEFT JOIN additional_roles ar ON u.id = ar.user_id
-			WHERE ve.id = $1
-		`, eventID).Scan(
-			&event.ID,
-			&event.Title,
-			&event.Description,
-			&event.Deadline,
-			&event.Status,
-			&event.OrganizerID,
-			&event.OrganizerName,
-			&event.OrganizerRole,
-			&event.CreatedAt,
-		)
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting event details: " + err.Error()})
-			return
-		}
-
-		// Get sub-votes and results
-		rows, err := db.Query(`
-			SELECT sv.id, sv.title, sv.description
-			FROM sub_votes sv
-			WHERE sv.event_id = $1
-			ORDER BY sv.id
-		`, eventID)
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting sub-votes: " + err.Error()})
-			return
-		}
-		defer rows.Close()
-
-		type OptionResult struct {
-			OptionID       int      `json:"option_id"`
-			Text           string   `json:"text"`
-			HasCustomInput bool     `json:"has_custom_input"`
-			VoteCount      int      `json:"vote_count"`
-			Percentage     float64  `json:"percentage"`
-			CustomInputs   []string `json:"custom_inputs,omitempty"`
-		}
-
-		type SubVoteResult struct {
-			SubVoteID   int            `json:"sub_vote_id"`
-			Title       string         `json:"title"`
-			Description string         `json:"description"`
-			TotalVotes  int            `json:"total_votes"`
-			Options     []OptionResult `json:"options"`
-		}
-
-		var results []SubVoteResult
-
-		for rows.Next() {
-			var subVote SubVoteResult
-			if err := rows.Scan(&subVote.SubVoteID, &subVote.Title, &subVote.Description); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning sub-vote: " + err.Error()})
-				return
-			}
-
-			// Get total votes for this sub-vote
-			err := db.QueryRow(`
-				SELECT COUNT(*) FROM user_votes WHERE sub_vote_id = $1
-			`, subVote.SubVoteID).Scan(&subVote.TotalVotes)
-
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting vote count: " + err.Error()})
-				return
-			}
-
-			// Get options and results
-			optionRows, err := db.Query(`
-				SELECT vo.id, vo.text, vo.has_custom_input, vo.vote_count
-				FROM vote_options vo
-				WHERE vo.sub_vote_id = $1
-				ORDER BY vo.id
-			`, subVote.SubVoteID)
-
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting options: " + err.Error()})
-				return
-			}
-			defer optionRows.Close()
-
-			for optionRows.Next() {
-				var option OptionResult
-				if err := optionRows.Scan(&option.OptionID, &option.Text, &option.HasCustomInput, &option.VoteCount); err != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning option: " + err.Error()})
-					return
-				}
-
-				// Calculate percentage
-				if subVote.TotalVotes > 0 {
-					option.Percentage = float64(option.VoteCount) / float64(subVote.TotalVotes) * 100
-				}
-
-				// Get custom inputs if applicable
-				if option.HasCustomInput && option.VoteCount > 0 {
-					customRows, err := db.Query(`
-						SELECT custom_input
-						FROM user_votes
-						WHERE sub_vote_id = $1 AND option_id = $2 AND custom_input IS NOT NULL AND custom_input != ''
-					`, subVote.SubVoteID, option.OptionID)
-
-					if err != nil {
-						c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting custom inputs: " + err.Error()})
-						return
-					}
-					defer customRows.Close()
-
-					for customRows.Next() {
-						var customInput string
-						if err := customRows.Scan(&customInput); err != nil {
-							c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning custom input: " + err.Error()})
-							return
-						}
-						option.CustomInputs = append(option.CustomInputs, customInput)
-					}
-				}
-
-				subVote.Options = append(subVote.Options, option)
-			}
-
-			results = append(results, subVote)
-		}
-
-		// Get vote counts
-		var totalVotes int
-		err = db.QueryRow(`
-			SELECT COUNT(DISTINCT user_id)
-			FROM user_votes uv
-			JOIN sub_votes sv ON uv.sub_vote_id = sv.id
-			WHERE sv.event_id = $1
-		`, eventID).Scan(&totalVotes)
-
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting total votes: " + err.Error()})
-			return
-		}
-
-		// Get total eligible users
-		var totalUsers int
-		err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error getting total users: " + err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{
-			"event": gin.H{
-				"id":             event.ID,
-				"title":          event.Title,
-				"description":    event.Description,
-				"deadline":       event.Deadline,
-				"status":         event.Status,
-				"organizer_id":   event.OrganizerID,
-				"organizer_name": event.OrganizerName,
-				"organizer_role": event.OrganizerRole,
-				"created_at":     event.CreatedAt,
-				"vote_count":     totalVotes,
-				"total_votes":    totalUsers,
-			},
-			"results": results,
-		})
-	}
 }
