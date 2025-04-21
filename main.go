@@ -66,9 +66,12 @@ func main() {
 	routes.SetupUserRoutes(apiRouter, db)
 	routes.SetupMessagingRoutes(apiRouter, db)
 	routes.RegisterTestRoute(apiRouter)
-	
+
 	// Register the new leave request routes
 	routes.SetupLeaveRequestRoutes(apiRouter, db)
+
+	// Register voting system routes
+	routes.SetupVotingRoutes(apiRouter, db)
 
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
