@@ -6,7 +6,7 @@ const (
 	DBName     = "HSANNU"
 	DBUser     = "postgres"
 	DBPassword = "2008"
-	DBPort     = "5433"
+	DBPort     = "8080"
 )
 
 // APNs configuration

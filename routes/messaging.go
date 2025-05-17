@@ -3,6 +3,7 @@ package routes
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,19 +80,94 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Get all conversations for the user with the most recent message
+	// More efficient query that fetches all data in one go using SQL joins and aggregation
 	query := `
+		WITH UserConversations AS (
+			SELECT 
+				c.id as conversation_id,
+				c.created_at as conversation_created_at
+			FROM 
+				conversations c
+			JOIN 
+				conversation_participants cp ON c.id = cp.conversation_id
+			WHERE 
+				cp.user_id = $1
+		),
+		UnreadCounts AS (
+			SELECT 
+				m.conversation_id,
+				COUNT(*) as unread_count
+			FROM 
+				messages m
+			JOIN 
+				UserConversations uc ON m.conversation_id = uc.conversation_id
+			WHERE 
+				m.sender_id != $1 AND m.read = false
+			GROUP BY 
+				m.conversation_id
+		),
+		LatestMessages AS (
+			SELECT DISTINCT ON (conversation_id) 
+				m.id as message_id,
+				m.conversation_id,
+				m.sender_id,
+				u.name as sender_name,
+				m.content,
+				m.created_at,
+				m.read
+			FROM 
+				messages m
+			JOIN 
+				UserConversations uc ON m.conversation_id = uc.conversation_id
+			JOIN 
+				users u ON m.sender_id = u.id
+			ORDER BY 
+				m.conversation_id, m.created_at DESC
+		),
+		ConversationParticipants AS (
+			SELECT 
+				cp.conversation_id,
+				json_agg(
+					json_build_object(
+						'id', u.id,
+						'first_name', u.first_name,
+						'last_name', u.last_name,
+						'name', u.name,
+						'role', u.role
+					)
+				) as participants
+			FROM 
+				conversation_participants cp
+			JOIN 
+				UserConversations uc ON cp.conversation_id = uc.conversation_id
+			JOIN 
+				users u ON cp.user_id = u.id
+			WHERE 
+				cp.user_id != $1
+			GROUP BY 
+				cp.conversation_id
+		)
 		SELECT 
-			c.id, 
-			c.created_at
+			uc.conversation_id,
+			uc.conversation_created_at,
+			COALESCE(cp.participants, '[]'::json) as participants,
+			COALESCE(uc2.unread_count, 0) as unread_count,
+			lm.message_id,
+			lm.sender_id,
+			lm.sender_name,
+			lm.content,
+			lm.created_at,
+			lm.read
 		FROM 
-			conversations c
-		JOIN 
-			conversation_participants cp ON c.id = cp.conversation_id
-		WHERE 
-			cp.user_id = $1
+			UserConversations uc
+		LEFT JOIN
+			ConversationParticipants cp ON uc.conversation_id = cp.conversation_id
+		LEFT JOIN
+			UnreadCounts uc2 ON uc.conversation_id = uc2.conversation_id
+		LEFT JOIN
+			LatestMessages lm ON uc.conversation_id = lm.conversation_id
 		ORDER BY 
-			c.created_at DESC
+			COALESCE(lm.created_at, uc.conversation_created_at) DESC
 	`
 
 	rows, err := db.Query(query, userIDInt)
@@ -107,10 +183,28 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 	var conversations []gin.H
 
 	for rows.Next() {
-		var conversation Conversation
+		var conversationID int
+		var conversationCreatedAt time.Time
+		var participantsJSON []byte
+		var unreadCount int
+		var messageID sql.NullInt64
+		var senderID sql.NullInt64
+		var senderName sql.NullString
+		var content sql.NullString
+		var messageCreatedAt sql.NullTime
+		var read sql.NullBool
+
 		err := rows.Scan(
-			&conversation.ID,
-			&conversation.CreatedAt,
+			&conversationID,
+			&conversationCreatedAt,
+			&participantsJSON,
+			&unreadCount,
+			&messageID,
+			&senderID,
+			&senderName,
+			&content,
+			&messageCreatedAt,
+			&read,
 		)
 
 		if err != nil {
@@ -121,135 +215,33 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Get all users in this conversation
-		usersQuery := `
-			SELECT 
-				u.id, 
-				u.first_name, 
-				u.last_name, 
-				u.name, 
-				u.role
-			FROM 
-				users u
-			JOIN 
-				conversation_participants cp ON u.id = cp.user_id
-			WHERE 
-				cp.conversation_id = $1 AND u.id != $2
-		`
-
-		userRows, err := db.Query(usersQuery, conversation.ID, userIDInt)
+		// Parse participants JSON
+		var participants []gin.H
+		err = json.Unmarshal(participantsJSON, &participants)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
-				"message": fmt.Sprintf("Error querying users for conversation: %v", err),
-			})
-			return
-		}
-		defer userRows.Close()
-
-		var users []User
-		for userRows.Next() {
-			var user User
-			err := userRows.Scan(
-				&user.ID,
-				&user.FirstName,
-				&user.LastName,
-				&user.Name,
-				&user.Role,
-			)
-
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"success": false,
-					"message": fmt.Sprintf("Error scanning user: %v", err),
-				})
-				return
-			}
-
-			users = append(users, user)
-		}
-
-		// Get the latest message in this conversation
-		var latestMessage Message
-		var hasMessages bool
-
-		messageQuery := `
-			SELECT 
-				m.id, 
-				m.sender_id, 
-				u.name as sender_name, 
-				m.content, 
-				m.created_at, 
-				m.read
-			FROM 
-				messages m
-			JOIN 
-				users u ON m.sender_id = u.id
-			WHERE 
-				m.conversation_id = $1
-			ORDER BY 
-				m.created_at DESC
-			LIMIT 1
-		`
-
-		err = db.QueryRow(messageQuery, conversation.ID).Scan(
-			&latestMessage.ID,
-			&latestMessage.SenderID,
-			&latestMessage.SenderName,
-			&latestMessage.Content,
-			&latestMessage.CreatedAt,
-			&latestMessage.Read,
-		)
-
-		if err != nil {
-			if err == sql.ErrNoRows {
-				hasMessages = false
-			} else {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"success": false,
-					"message": fmt.Sprintf("Error querying latest message: %v", err),
-				})
-				return
-			}
-		} else {
-			hasMessages = true
-		}
-
-		// Count unread messages
-		var unreadCount int
-		unreadQuery := `
-			SELECT 
-				COUNT(*) 
-			FROM 
-				messages 
-			WHERE 
-				conversation_id = $1 AND sender_id != $2 AND read = false
-		`
-
-		err = db.QueryRow(unreadQuery, conversation.ID, userIDInt).Scan(&unreadCount)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"message": fmt.Sprintf("Error counting unread messages: %v", err),
+				"message": fmt.Sprintf("Error parsing participants JSON: %v", err),
 			})
 			return
 		}
 
 		conversationData := gin.H{
-			"id":           conversation.ID,
-			"created_at":   conversation.CreatedAt,
-			"participants": users,
+			"id":           conversationID,
+			"created_at":   conversationCreatedAt,
+			"participants": participants,
 			"unread_count": unreadCount,
 		}
 
-		if hasMessages {
+		// Add latest message if it exists
+		if messageID.Valid {
 			conversationData["latest_message"] = gin.H{
-				"id":         latestMessage.ID,
-				"sender_id":  latestMessage.SenderID,
-				"sender":     latestMessage.SenderName,
-				"content":    latestMessage.Content,
-				"created_at": latestMessage.CreatedAt,
-				"read":       latestMessage.Read,
+				"id":         messageID.Int64,
+				"sender_id":  senderID.Int64,
+				"sender":     senderName.String,
+				"content":    content.String,
+				"created_at": messageCreatedAt.Time,
+				"read":       read.Bool,
 			}
 		} else {
 			conversationData["latest_message"] = nil
@@ -264,11 +256,13 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// GetConversationMessages retrieves all messages for a specific conversation
+// GetConversationMessages retrieves messages for a specific conversation with pagination
 // GET /api/messaging/conversation/:conversation_id/messages
 func GetConversationMessages(c *gin.Context, db *sql.DB) {
 	conversationID := c.Param("conversation_id")
 	userID := c.Query("user_id")
+	limitStr := c.DefaultQuery("limit", "50")       // Default fetch 50 messages
+	beforeIDStr := c.DefaultQuery("before_id", "0") // ID to fetch messages before (for pagination)
 
 	if conversationID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -315,27 +309,67 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 		}
 	}
 
-	// Get all messages for the conversation
-	query := `
-		SELECT 
-			m.id, 
-			m.conversation_id,
-			m.sender_id, 
-			u.name as sender_name, 
-			m.content, 
-			m.created_at, 
-			m.read
-		FROM 
-			messages m
-		JOIN 
-			users u ON m.sender_id = u.id
-		WHERE 
-			m.conversation_id = $1
-		ORDER BY 
-			m.created_at ASC
-	`
+	// Convert limit and beforeID
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 50
+	}
 
-	rows, err := db.Query(query, conversationIDInt)
+	beforeID, err := strconv.Atoi(beforeIDStr)
+	if err != nil || beforeID < 0 {
+		beforeID = 0
+	}
+
+	var query string
+	var queryArgs []interface{}
+
+	if beforeID > 0 {
+		// Get messages before a certain ID (for pagination)
+		query = `
+			SELECT 
+				m.id, 
+				m.conversation_id,
+				m.sender_id, 
+				u.name as sender_name, 
+				m.content, 
+				m.created_at, 
+				m.read
+			FROM 
+				messages m
+			JOIN 
+				users u ON m.sender_id = u.id
+			WHERE 
+				m.conversation_id = $1 AND m.id < $2
+			ORDER BY 
+				m.created_at DESC
+			LIMIT $3
+		`
+		queryArgs = []interface{}{conversationIDInt, beforeID, limit}
+	} else {
+		// Get the most recent messages
+		query = `
+			SELECT 
+				m.id, 
+				m.conversation_id,
+				m.sender_id, 
+				u.name as sender_name, 
+				m.content, 
+				m.created_at, 
+				m.read
+			FROM 
+				messages m
+			JOIN 
+				users u ON m.sender_id = u.id
+			WHERE 
+				m.conversation_id = $1
+			ORDER BY 
+				m.created_at DESC
+			LIMIT $2
+		`
+		queryArgs = []interface{}{conversationIDInt, limit}
+	}
+
+	rows, err := db.Query(query, queryArgs...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -346,6 +380,7 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 	defer rows.Close()
 
 	var messages []gin.H
+	oldestID := 0
 
 	for rows.Next() {
 		var message Message
@@ -367,6 +402,11 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 			return
 		}
 
+		// Keep track of the oldest message ID for pagination
+		if oldestID == 0 || message.ID < oldestID {
+			oldestID = message.ID
+		}
+
 		messages = append(messages, gin.H{
 			"id":              message.ID,
 			"conversation_id": message.ConversationID,
@@ -378,9 +418,45 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 		})
 	}
 
+	// Reverse the order so messages are in chronological order (oldest first)
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	// Check if there are more messages available
+	var hasMore bool
+	var totalCount int
+	if oldestID > 0 {
+		err = db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM messages 
+				WHERE conversation_id = $1 AND id < $2
+			)
+		`, conversationIDInt, oldestID).Scan(&hasMore)
+
+		if err != nil {
+			fmt.Printf("Error checking if more messages exist: %v\n", err)
+			hasMore = false
+		}
+
+		// Also get the total count for the frontend
+		err = db.QueryRow(`
+			SELECT COUNT(*) FROM messages 
+			WHERE conversation_id = $1
+		`, conversationIDInt).Scan(&totalCount)
+
+		if err != nil {
+			fmt.Printf("Error counting total messages: %v\n", err)
+			totalCount = len(messages)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"success":  true,
-		"messages": messages,
+		"success":     true,
+		"messages":    messages,
+		"has_more":    hasMore,
+		"oldest_id":   oldestID,
+		"total_count": totalCount,
 	})
 }
 
