@@ -38,12 +38,12 @@ func initWebAuthn() {
 		// Get the RPID from environment or default to hostname
 		rpID := os.Getenv("WEBAUTHN_RP_ID")
 		if rpID == "" {
-			rpID = "localhost" // Use appropriate domain in production
+			rpID = "connect.hsannu.com" // Changed from localhost to production domain
 		}
 
 		rpOrigin := os.Getenv("WEBAUTHN_RP_ORIGIN")
 		if rpOrigin == "" {
-			rpOrigin = "http://localhost:2000" // Default to HTTP localhost
+			rpOrigin = "https://connect.hsannu.com" // Changed to HTTPS production URL
 		}
 
 		var err error

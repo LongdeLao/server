@@ -72,7 +72,7 @@ func main() {
 
 	// Register voting system routes
 	routes.SetupVotingRoutes(apiRouter, db)
-	
+
 	// Register WebAuthn/Passkey routes
 	routes.SetupPasskeyRoutes(apiRouter, db)
 
