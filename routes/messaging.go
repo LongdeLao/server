@@ -911,48 +911,48 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 	// If user is a staff member (teacher/admin), they can chat with students
 	if userRole == "student" {
 		query = `
-			SELECT 
-				u.id, 
-				u.first_name, 
-				u.last_name, 
-				u.name, 
-				u.role,
-				pp.file_path as profile_picture,
-				string_agg(DISTINCT ar.role, ', ') as additional_roles
-			FROM 
-				users u
-			LEFT JOIN
-				profile_pictures pp ON u.id = pp.user_id
-			LEFT JOIN
-				additional_roles ar ON u.id = ar.user_id
-			WHERE 
-				u.role = 'staff'
-			GROUP BY
-				u.id, u.first_name, u.last_name, u.name, u.role, pp.file_path
-			ORDER BY 
-				u.name
-		`
+            SELECT 
+                u.id, 
+                u.first_name, 
+                u.last_name, 
+                u.name, 
+                u.role,
+                COALESCE(pp.file_path, '') as profile_picture,
+                string_agg(DISTINCT ar.role, ', ') as additional_roles
+            FROM 
+                users u
+            LEFT JOIN
+                profile_pictures pp ON u.id = pp.user_id
+            LEFT JOIN
+                additional_roles ar ON u.id = ar.user_id
+            WHERE 
+                u.role = 'staff'
+            GROUP BY
+                u.id, u.first_name, u.last_name, u.name, u.role, pp.file_path
+            ORDER BY 
+                u.name
+        `
 		availableRole = "staff"
 		fmt.Printf("GetAvailableChatUsers: Student user, looking for staff members\n")
 	} else if userRole == "staff" {
 		query = `
-			SELECT 
-				u.id, 
-				u.first_name, 
-				u.last_name, 
-				u.name, 
-				u.role,
-				pp.file_path as profile_picture,
-				NULL as additional_roles
-			FROM 
-				users u
-			LEFT JOIN
-				profile_pictures pp ON u.id = pp.user_id
-			WHERE 
-				u.role = 'student'
-			ORDER BY 
-				u.name
-		`
+            SELECT 
+                u.id, 
+                u.first_name, 
+                u.last_name, 
+                u.name, 
+                u.role,
+                COALESCE(pp.file_path, '') as profile_picture,
+                NULL as additional_roles
+            FROM 
+                users u
+            LEFT JOIN
+                profile_pictures pp ON u.id = pp.user_id
+            WHERE 
+                u.role = 'student'
+            ORDER BY 
+                u.name
+        `
 		availableRole = "students"
 		fmt.Printf("GetAvailableChatUsers: Staff user, looking for student members\n")
 	} else {
@@ -1016,16 +1016,25 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 		}
 
 		// Add profile picture if present
-		if user.ProfilePicture.Valid {
+		if user.ProfilePicture.Valid && user.ProfilePicture.String != "" {
 			// Build the URL using the API endpoint for profile pictures
 			// We can either extract the extension from the file path or default to .jpg
 			var extension string
 			if strings.HasSuffix(user.ProfilePicture.String, ".png") {
 				extension = ".png"
+			} else if strings.HasSuffix(user.ProfilePicture.String, ".jpg") {
+				extension = ".jpg"
+			} else if strings.HasSuffix(user.ProfilePicture.String, ".jpeg") {
+				extension = ".jpeg"
 			} else {
 				extension = ".jpg" // Default to jpg
 			}
+
+			// Use the absolute URL for the API endpoint
 			userObj["profile_picture"] = fmt.Sprintf("/api/profile_pictures/%d%s", user.ID, extension)
+
+			// For debugging
+			fmt.Printf("Profile picture for user %d: %s\n", user.ID, userObj["profile_picture"])
 		}
 
 		// Add additional roles if present
