@@ -48,9 +48,9 @@ func initWebAuthn() {
 
 		var err error
 		webAuthnConfig, err = webauthn.New(&webauthn.Config{
-			RPDisplayName: rpDisplayName,      // Display name for your app
-			RPID:          rpID,               // Your domain
-			RPOrigins:     []string{rpOrigin}, // Origins that are allowed to use the WebAuthn
+			RPDisplayName: rpDisplayName,                                   // Display name for your app
+			RPID:          rpID,                                            // Your domain
+			RPOrigins:     []string{rpOrigin, "http://connect.hsannu.com"}, // Allow both HTTP and HTTPS
 		})
 
 		if err != nil {

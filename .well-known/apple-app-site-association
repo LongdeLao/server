@@ -1,0 +1,16 @@
+{
+    "webcredentials": {
+        "apps": [
+            "LEO9HB3TMF.com.leo.hsannu"
+        ]
+    },
+    "applinks": {
+        "apps": [],
+        "details": [
+            {
+                "appID": "LEO9HB3TMF.com.leo.hsannu",
+                "paths": ["*"]
+            }
+        ]
+    }
+} 

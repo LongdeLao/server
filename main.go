@@ -22,6 +22,9 @@ func main() {
 	// Initialize the Gin router.
 	router := gin.Default()
 
+	// Register routes for serving .well-known directory
+	routes.SetupStaticRoutes(router)
+
 	// Connect to your PostgreSQL database.
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		config.DBHost,
