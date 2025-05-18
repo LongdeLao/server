@@ -917,16 +917,18 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 				u.last_name, 
 				u.name, 
 				u.role,
-				u.profile_picture,
+				pp.file_path as profile_picture,
 				string_agg(DISTINCT ar.role, ', ') as additional_roles
 			FROM 
 				users u
+			LEFT JOIN
+				profile_pictures pp ON u.id = pp.user_id
 			LEFT JOIN
 				additional_roles ar ON u.id = ar.user_id
 			WHERE 
 				u.role = 'staff'
 			GROUP BY
-				u.id, u.first_name, u.last_name, u.name, u.role, u.profile_picture
+				u.id, u.first_name, u.last_name, u.name, u.role, pp.file_path
 			ORDER BY 
 				u.name
 		`
@@ -940,10 +942,12 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 				u.last_name, 
 				u.name, 
 				u.role,
-				u.profile_picture,
+				pp.file_path as profile_picture,
 				NULL as additional_roles
 			FROM 
 				users u
+			LEFT JOIN
+				profile_pictures pp ON u.id = pp.user_id
 			WHERE 
 				u.role = 'student'
 			ORDER BY 
@@ -1013,7 +1017,15 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 
 		// Add profile picture if present
 		if user.ProfilePicture.Valid {
-			userObj["profile_picture"] = user.ProfilePicture.String
+			// Build the URL using the API endpoint for profile pictures
+			// We can either extract the extension from the file path or default to .jpg
+			var extension string
+			if strings.HasSuffix(user.ProfilePicture.String, ".png") {
+				extension = ".png"
+			} else {
+				extension = ".jpg" // Default to jpg
+			}
+			userObj["profile_picture"] = fmt.Sprintf("/api/profile_pictures/%d%s", user.ID, extension)
 		}
 
 		// Add additional roles if present
