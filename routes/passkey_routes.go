@@ -1,13 +1,18 @@
 package routes
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"server/models"
 	"sync"
+
+	"encoding/base64"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -106,83 +111,165 @@ func removeSession(username string) {
 
 // beginRegisterPasskey initiates passkey registration
 func beginRegisterPasskey(c *gin.Context, db *sql.DB) {
+	fmt.Println("🔑 [SERVER DEBUG] Beginning passkey registration")
+
 	var request struct {
 		Username string `json:"username" binding:"required"`
 	}
 
+	// Log raw request body
+	rawData, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to read request body: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	// Print the raw request body
+	fmt.Printf("🔑 [SERVER DEBUG] Raw request: %s\n", string(rawData))
+
+	// Restore the body for binding
+	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(rawData))
+
 	if err := c.BindJSON(&request); err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] JSON binding error: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
 
+	fmt.Printf("🔑 [SERVER DEBUG] Registration requested for username: %s\n", request.Username)
+
 	// Get user for webauthn
 	user, err := models.GetUserForWebAuthn(db, request.Username)
 	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
+	fmt.Printf("🔑 [SERVER DEBUG] User found: ID=%s, Username=%s\n", user.UserID, user.Username)
+
+	// Log WebAuthn configuration
+	fmt.Printf("🔑 [SERVER DEBUG] WebAuthn config: RPDisplayName=%s, RPID=%s\n",
+		webAuthnConfig.Config.RPDisplayName, webAuthnConfig.Config.RPID)
 
 	// Create options for registering a new credential
+	fmt.Println("🔑 [SERVER DEBUG] Generating credential creation options")
 	options, sessionData, err := webAuthnConfig.BeginRegistration(user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin registration"})
+		fmt.Printf("❌ [SERVER DEBUG] Failed to begin registration: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to begin registration: %v", err)})
 		return
 	}
 
+	// Log session data and challenge
+	fmt.Printf("🔑 [SERVER DEBUG] Session data generated, challenge length: %d\n", len(sessionData.Challenge))
+	fmt.Printf("🔑 [SERVER DEBUG] Challenge (hex): %x\n", sessionData.Challenge)
+
 	// Store session data temporarily
 	storeSession(request.Username, *sessionData)
+	fmt.Printf("🔑 [SERVER DEBUG] Session stored for user: %s\n", request.Username)
+
+	// Log the response options
+	optionsJSON, err := json.Marshal(options)
+	if err == nil {
+		fmt.Printf("🔑 [SERVER DEBUG] Response options: %s\n", string(optionsJSON))
+	}
 
 	// Return options to client
+	fmt.Println("🔑 [SERVER DEBUG] Sending registration options to client")
 	c.JSON(http.StatusOK, options)
 }
 
 // finishRegisterPasskey completes passkey registration
 func finishRegisterPasskey(c *gin.Context, db *sql.DB) {
+	fmt.Println("🔑 [SERVER DEBUG] Finishing passkey registration")
+
+	// Log raw request body
+	rawData, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to read request body: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		return
+	}
+
+	// Print the raw request body
+	fmt.Printf("🔑 [SERVER DEBUG] Raw finish request: %s\n", string(rawData))
+
+	// Restore the body for binding
+	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(rawData))
+
 	var request struct {
 		Username string          `json:"username" binding:"required"`
 		Response json.RawMessage `json:"response" binding:"required"`
 	}
 
 	if err := c.BindJSON(&request); err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] JSON binding error for finish: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
 
+	fmt.Printf("🔑 [SERVER DEBUG] Registration completion for username: %s\n", request.Username)
+	fmt.Printf("🔑 [SERVER DEBUG] Response data length: %d\n", len(request.Response))
+
 	// Get user for webauthn
 	user, err := models.GetUserForWebAuthn(db, request.Username)
 	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
+	fmt.Printf("🔑 [SERVER DEBUG] User found for completion: ID=%s, Username=%s\n", user.UserID, user.Username)
 
 	// Get session data
 	sessionData, ok := getSession(request.Username)
 	if !ok {
+		fmt.Printf("❌ [SERVER DEBUG] Session data not found for user: %s\n", request.Username)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Registration session not found"})
 		return
 	}
+	fmt.Printf("🔑 [SERVER DEBUG] Session data retrieved for user: %s\n", request.Username)
+	fmt.Printf("🔑 [SERVER DEBUG] Challenge (hex): %x\n", sessionData.Challenge)
+
+	// Log headers
+	fmt.Println("🔑 [SERVER DEBUG] Request headers:")
+	for name, values := range c.Request.Header {
+		for _, value := range values {
+			fmt.Printf("🔑 [SERVER DEBUG] Header %s: %s\n", name, value)
+		}
+	}
 
 	// Parse and validate the attestation response
+	fmt.Println("🔑 [SERVER DEBUG] Validating attestation with WebAuthn")
 	credential, err := webAuthnConfig.FinishRegistration(user, sessionData, c.Request)
 	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to verify attestation: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to verify attestation: %v", err)})
 		return
 	}
+	fmt.Printf("🔑 [SERVER DEBUG] Attestation verified successfully for user: %s\n", request.Username)
+	fmt.Printf("🔑 [SERVER DEBUG] Credential ID (base64): %s\n", base64.StdEncoding.EncodeToString(credential.ID))
+	fmt.Printf("🔑 [SERVER DEBUG] PublicKey length: %d\n", len(credential.PublicKey))
 
 	// Remove session data
 	removeSession(request.Username)
+	fmt.Printf("🔑 [SERVER DEBUG] Session data removed for user: %s\n", request.Username)
 
 	// Save credential to database
+	fmt.Println("🔑 [SERVER DEBUG] Saving credential to database")
 	err = models.SavePasskeyCredential(db, user.UserID, *credential)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save credential"})
+		fmt.Printf("❌ [SERVER DEBUG] Failed to save credential: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save credential: %v", err)})
 		return
 	}
+	fmt.Printf("✅ [SERVER DEBUG] Credential saved successfully for user: %s\n", request.Username)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Passkey registered successfully",
 	})
+	fmt.Println("🔑 [SERVER DEBUG] Registration process completed successfully")
 }
 
 // beginLoginPasskey initiates passkey authentication
