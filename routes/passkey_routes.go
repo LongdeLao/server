@@ -92,6 +92,11 @@ func SetupPasskeyRoutes(router *gin.RouterGroup, db *sql.DB) {
 	router.GET("/has-passkey/:username", func(c *gin.Context) {
 		hasPasskey(c, db)
 	})
+
+	// Route to delete a user's passkey
+	router.DELETE("/delete-passkey/:username", func(c *gin.Context) {
+		deletePasskey(c, db)
+	})
 }
 
 // storeSession stores session data in memory
@@ -479,5 +484,51 @@ func hasPasskey(c *gin.Context, db *sql.DB) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"has_passkey": hasPasskey,
+	})
+}
+
+// deletePasskey deletes a user's passkey
+func deletePasskey(c *gin.Context, db *sql.DB) {
+	// Get username from URL parameter
+	username := c.Param("username")
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
+		return
+	}
+
+	fmt.Printf("🔑 [SERVER DEBUG] Deleting passkey for user: %s\n", username)
+
+	// Get user for webauthn
+	user, err := models.GetUserForWebAuthn(db, username)
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Delete all credentials for this user
+	query := `
+		DELETE FROM passkey_credentials
+		WHERE user_id = $1
+	`
+	result, err := db.Exec(query, user.UserID)
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to delete passkey: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete passkey"})
+		return
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to get rows affected: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get operation results"})
+		return
+	}
+
+	fmt.Printf("✅ [SERVER DEBUG] Successfully deleted %d passkey(s) for user: %s\n", rowsAffected, username)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Successfully deleted %d passkey(s)", rowsAffected),
 	})
 }
