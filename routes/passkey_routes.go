@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"server/models"
+	"strings"
 	"sync"
 
 	"encoding/base64"
@@ -47,15 +48,20 @@ func initWebAuthn() {
 		}
 
 		var err error
-		webAuthnConfig, err = webauthn.New(&webauthn.Config{
+		config := &webauthn.Config{
 			RPDisplayName: rpDisplayName,                                   // Display name for your app
 			RPID:          rpID,                                            // Your domain
 			RPOrigins:     []string{rpOrigin, "http://connect.hsannu.com"}, // Allow both HTTP and HTTPS
-		})
+		}
+
+		webAuthnConfig, err = webauthn.New(config)
 
 		if err != nil {
 			panic(fmt.Sprintf("Failed to create WebAuthn instance: %v", err))
 		}
+
+		fmt.Printf("🔑 [SERVER DEBUG] WebAuthn initialized with RPID: %s, RPOrigins: %v\n",
+			webAuthnConfig.Config.RPID, webAuthnConfig.Config.RPOrigins)
 	})
 }
 
@@ -239,27 +245,73 @@ func finishRegisterPasskey(c *gin.Context, db *sql.DB) {
 		}
 	}
 
-	// Enhanced logging for request.Response before parsing
-	fmt.Printf("🔑 [SERVER DEBUG] Raw request.Response (clientDataJSON and attestationObject container): %s\n", string(request.Response))
-
-	var parsedResponse struct {
+	// Parse the response data to extract attestation object and client data JSON
+	var attestationResponse struct {
 		AttestationObject string `json:"attestationObject"`
 		ClientDataJSON    string `json:"clientDataJSON"`
 	}
-	if err := json.Unmarshal(request.Response, &parsedResponse); err == nil {
-		fmt.Printf("🔑 [SERVER DEBUG] Parsed ClientDataJSON (from request.Response): %s\n", parsedResponse.ClientDataJSON)
-		fmt.Printf("🔑 [SERVER DEBUG] Parsed AttestationObject (from request.Response, base64): %s\n", parsedResponse.AttestationObject)
 
-		// Attempt to decode and print ClientDataJSON for readability
-		clientDataBytes, b64Err := base64.StdEncoding.DecodeString(parsedResponse.ClientDataJSON)
-		if b64Err == nil {
-			fmt.Printf("🔑 [SERVER DEBUG] Decoded ClientDataJSON: %s\n", string(clientDataBytes))
+	if err := json.Unmarshal(request.Response, &attestationResponse); err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to parse attestation response: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attestation response format"})
+		return
+	}
+
+	// Debug attestation data
+	fmt.Printf("🔑 [SERVER DEBUG] Attestation Object: %s\n", attestationResponse.AttestationObject)
+	fmt.Printf("🔑 [SERVER DEBUG] Client Data JSON: %s\n", attestationResponse.ClientDataJSON)
+
+	// Decode and debug client data JSON contents
+	clientDataBytes, err := base64.StdEncoding.DecodeString(attestationResponse.ClientDataJSON)
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to decode client data JSON: %v\n", err)
+	} else {
+		fmt.Printf("🔑 [SERVER DEBUG] Decoded Client Data: %s\n", string(clientDataBytes))
+
+		// Parse to get challenge and origin
+		var clientData struct {
+			Type      string `json:"type"`
+			Challenge string `json:"challenge"`
+			Origin    string `json:"origin"`
+		}
+
+		if err := json.Unmarshal(clientDataBytes, &clientData); err != nil {
+			fmt.Printf("❌ [SERVER DEBUG] Failed to parse client data: %v\n", err)
 		} else {
-			fmt.Printf("⚠️ [SERVER DEBUG] Failed to base64 decode ClientDataJSON from request.Response: %v\n", b64Err)
+			fmt.Printf("🔑 [SERVER DEBUG] Client Data Type: %s\n", clientData.Type)
+			fmt.Printf("🔑 [SERVER DEBUG] Client Data Challenge: %s\n", clientData.Challenge)
+			fmt.Printf("🔑 [SERVER DEBUG] Client Data Origin: %s\n", clientData.Origin)
+
+			// Compare challenge
+			fmt.Printf("🔑 [SERVER DEBUG] Expected Challenge (hex): %x\n", sessionData.Challenge)
+		}
+	}
+
+	// Try base64url decoding if standard decoding fails
+	if _, err := base64.StdEncoding.DecodeString(attestationResponse.AttestationObject); err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to decode attestation object with standard base64: %v\n", err)
+
+		// Replace characters for base64url decoding
+		attestationResponse.AttestationObject = strings.ReplaceAll(attestationResponse.AttestationObject, "-", "+")
+		attestationResponse.AttestationObject = strings.ReplaceAll(attestationResponse.AttestationObject, "_", "/")
+		// Add padding if necessary
+		if len(attestationResponse.AttestationObject)%4 != 0 {
+			padding := 4 - len(attestationResponse.AttestationObject)%4
+			attestationResponse.AttestationObject += strings.Repeat("=", padding)
+		}
+
+		if _, err := base64.StdEncoding.DecodeString(attestationResponse.AttestationObject); err != nil {
+			fmt.Printf("❌ [SERVER DEBUG] Failed to decode attestation object with base64url: %v\n", err)
+		} else {
+			fmt.Println("🔑 [SERVER DEBUG] Base64url decoding of attestation object successful")
 		}
 	} else {
-		fmt.Printf("⚠️ [SERVER DEBUG] Failed to unmarshal request.Response into ClientDataJSON/AttestationObject struct: %v\n", err)
+		fmt.Println("🔑 [SERVER DEBUG] Standard base64 decoding of attestation object successful")
 	}
+
+	// Display WebAuthn configuration for verification
+	fmt.Printf("🔑 [SERVER DEBUG] WebAuthn config for verification - RPID: %s, Origins: %v\n",
+		webAuthnConfig.Config.RPID, webAuthnConfig.Config.RPOrigins)
 
 	// Parse and validate the attestation response
 	fmt.Println("🔑 [SERVER DEBUG] Validating attestation with WebAuthn")
@@ -269,9 +321,12 @@ func finishRegisterPasskey(c *gin.Context, db *sql.DB) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to verify attestation: %v", err)})
 		return
 	}
+
+	// Log successful credential details
 	fmt.Printf("🔑 [SERVER DEBUG] Attestation verified successfully for user: %s\n", request.Username)
-	fmt.Printf("🔑 [SERVER DEBUG] Credential ID (base64): %s\n", base64.StdEncoding.EncodeToString(credential.ID))
-	fmt.Printf("🔑 [SERVER DEBUG] PublicKey length: %d\n", len(credential.PublicKey))
+	fmt.Printf("🔑 [SERVER DEBUG] Credential ID: %x\n", credential.ID)
+	fmt.Printf("🔑 [SERVER DEBUG] Public Key: %x\n", credential.PublicKey)
+	fmt.Printf("🔑 [SERVER DEBUG] Sign Count: %d\n", credential.Authenticator.SignCount)
 
 	// Remove session data
 	removeSession(request.Username)
