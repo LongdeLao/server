@@ -72,6 +72,9 @@ func main() {
 
 	// Register voting system routes
 	routes.SetupVotingRoutes(apiRouter, db)
+	
+	// Register WebAuthn/Passkey routes
+	routes.SetupPasskeyRoutes(apiRouter, db)
 
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
