@@ -198,19 +198,41 @@ func finishRegisterPasskey(c *gin.Context, db *sql.DB) {
 	// Restore the body for binding
 	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(rawData))
 
+	// Parse request using a different structure that directly maps to what the library expects
 	var request struct {
-		Username string          `json:"username" binding:"required"`
-		Response json.RawMessage `json:"response" binding:"required"`
+		Username string `json:"username" binding:"required"`
+		Response struct {
+			AttestationObject string `json:"attestationObject"`
+			ClientDataJSON    string `json:"clientDataJSON"`
+		} `json:"response" binding:"required"`
 	}
 
 	if err := c.BindJSON(&request); err != nil {
 		fmt.Printf("❌ [SERVER DEBUG] JSON binding error for finish: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request format: %v", err)})
 		return
 	}
 
 	fmt.Printf("🔑 [SERVER DEBUG] Registration completion for username: %s\n", request.Username)
-	fmt.Printf("🔑 [SERVER DEBUG] Response data length: %d\n", len(request.Response))
+	
+	// Decode the client data for inspection
+	clientDataBytes, err := base64.StdEncoding.DecodeString(request.Response.ClientDataJSON)
+	if err != nil {
+		clientDataBytes, err = base64.RawStdEncoding.DecodeString(request.Response.ClientDataJSON)
+		if err != nil {
+			clientDataBytes, err = base64.URLEncoding.DecodeString(request.Response.ClientDataJSON)
+			if err != nil {
+				clientDataBytes, err = base64.RawURLEncoding.DecodeString(request.Response.ClientDataJSON)
+				if err != nil {
+					fmt.Printf("❌ [SERVER DEBUG] Could not decode clientDataJSON: %v\n", err)
+				}
+			}
+		}
+	}
+	
+	if err == nil {
+		fmt.Printf("🔑 [SERVER DEBUG] Decoded ClientDataJSON: %s\n", string(clientDataBytes))
+	}
 
 	// Get user for webauthn
 	user, err := models.GetUserForWebAuthn(db, request.Username)
@@ -238,6 +260,33 @@ func finishRegisterPasskey(c *gin.Context, db *sql.DB) {
 			fmt.Printf("🔑 [SERVER DEBUG] Header %s: %s\n", name, value)
 		}
 	}
+	
+	// Create a proper format for the WebAuthn library
+	parsedResponse := struct {
+		ID                string `json:"id"`
+		RawID             string `json:"rawId"`
+		Type              string `json:"type"`
+		AttestationObject string `json:"attestationObject"`
+		ClientDataJSON    string `json:"clientDataJSON"`
+	}{
+		// ID and RawID can be the same, typically a base64-encoded credential ID
+		ID:                request.Response.AttestationObject, // This is just a placeholder
+		RawID:             request.Response.AttestationObject, // This is just a placeholder
+		Type:              "public-key",
+		AttestationObject: request.Response.AttestationObject,
+		ClientDataJSON:    request.Response.ClientDataJSON,
+	}
+	
+	// Convert the parsed response to JSON
+	modifiedBody, err := json.Marshal(parsedResponse)
+	if err != nil {
+		fmt.Printf("❌ [SERVER DEBUG] Failed to marshal modified response: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Server error processing attestation"})
+		return
+	}
+	
+	// Replace the request body with our modified version
+	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(modifiedBody))
 
 	// Parse and validate the attestation response
 	fmt.Println("🔑 [SERVER DEBUG] Validating attestation with WebAuthn")
@@ -248,28 +297,26 @@ func finishRegisterPasskey(c *gin.Context, db *sql.DB) {
 		return
 	}
 	fmt.Printf("🔑 [SERVER DEBUG] Attestation verified successfully for user: %s\n", request.Username)
-	fmt.Printf("🔑 [SERVER DEBUG] Credential ID (base64): %s\n", base64.StdEncoding.EncodeToString(credential.ID))
-	fmt.Printf("🔑 [SERVER DEBUG] PublicKey length: %d\n", len(credential.PublicKey))
 
-	// Remove session data
+	// Clean up session
 	removeSession(request.Username)
-	fmt.Printf("🔑 [SERVER DEBUG] Session data removed for user: %s\n", request.Username)
 
-	// Save credential to database
-	fmt.Println("🔑 [SERVER DEBUG] Saving credential to database")
+	// Save the credential to the database
 	err = models.SavePasskeyCredential(db, user.UserID, *credential)
 	if err != nil {
 		fmt.Printf("❌ [SERVER DEBUG] Failed to save credential: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save credential: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save credential"})
 		return
 	}
-	fmt.Printf("✅ [SERVER DEBUG] Credential saved successfully for user: %s\n", request.Username)
 
+	fmt.Printf("✅ [SERVER DEBUG] Passkey registration successful for user: %s\n", request.Username)
+
+	// Success response
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Passkey registered successfully",
+		"success":  true,
+		"message":  "Passkey registered successfully",
+		"username": request.Username,
 	})
-	fmt.Println("🔑 [SERVER DEBUG] Registration process completed successfully")
 }
 
 // beginLoginPasskey initiates passkey authentication
