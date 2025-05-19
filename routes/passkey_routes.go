@@ -544,6 +544,9 @@ func finishLoginPasskey(c *gin.Context, db *sql.DB) {
 
 		// Return user data
 		fmt.Println("✅ [SERVER DEBUG] Login successful, returning user data")
+		fmt.Printf("User data: ID=%d, Name=%s, Role=%s, AdditionalRoles=%v\n",
+			fullUser.ID, fullUser.Name, fullUser.Role, fullUser.AdditionalRoles)
+
 		c.JSON(http.StatusOK, gin.H{
 			"id":               fullUser.ID,
 			"username":         fullUser.Username,
