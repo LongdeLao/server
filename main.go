@@ -98,4 +98,6 @@ func main() {
 	if err := router.Run(fmt.Sprintf(":%s", config.ServerPort)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
+
 }
+  
