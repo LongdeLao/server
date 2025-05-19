@@ -68,6 +68,39 @@ func (u *PasskeyUser) WebAuthnCredentials() []webauthn.Credential {
 	return u.Credentials
 }
 
+// Helper function to decode base64 data, handling both standard and URL-safe formats
+func decodeBase64(input string) ([]byte, error) {
+	// Try standard base64 first
+	decoded, err := base64.StdEncoding.DecodeString(input)
+	if err == nil {
+		return decoded, nil
+	}
+
+	// Try URL-safe base64
+	// Convert from URL-safe to standard if needed
+	input = strings.ReplaceAll(input, "-", "+")
+	input = strings.ReplaceAll(input, "_", "/")
+
+	// Add padding if needed
+	switch len(input) % 4 {
+	case 2:
+		input += "=="
+	case 3:
+		input += "="
+	}
+
+	return base64.StdEncoding.DecodeString(input)
+}
+
+// Helper function to get keys from a map for debugging
+func getMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // SetupPasskeyRoutes initializes WebAuthn and sets up the routes
 func SetupPasskeyRoutes(router *gin.RouterGroup, db *sql.DB) {
 	// Initialize WebAuthn
@@ -571,94 +604,258 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 
 			// Try parsing with the WebAuthn library
 			parsedResponse, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(webAuthnJSON))
-			if err == nil {
-				log.Printf("DEBUG - Login: Successfully parsed WebAuthn response format")
+			if err != nil {
+				log.Printf("ERROR - Login: Failed to parse WebAuthn response with standard parser: %v", err)
 
-				// Get session ID from cookie or request
-				sessionID, _ := c.Cookie("passkey_session")
-				if sessionID == "" {
-					sessionID = req.SessionID
-					log.Printf("DEBUG - Login: Using session ID from request: %s", sessionID)
+				// Try fixing the WebAuthn response format
+				var webAuthnObj map[string]interface{}
+				if err := json.Unmarshal(webAuthnJSON, &webAuthnObj); err != nil {
+					log.Printf("ERROR - Login: Failed to parse WebAuthn JSON: %v", err)
 				} else {
-					log.Printf("DEBUG - Login: Using session ID from cookie: %s", sessionID)
-				}
+					log.Printf("DEBUG - Login: WebAuthn object keys: %v", getMapKeys(webAuthnObj))
 
-				// Get session data
-				sessionData, ok := sessionStore[sessionID]
-				if !ok {
-					log.Printf("ERROR - Login: Session data not found for ID: %s", sessionID)
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
-					return
-				}
-				defer delete(sessionStore, sessionID) // Remove session data when done
+					// Check if ID exists
+					if id, ok := webAuthnObj["id"].(string); ok {
+						log.Printf("DEBUG - Login: Found ID in WebAuthn response: %s", id)
 
-				// Check if the user exists
-				var userID int
-				var userName, displayName, role string
-				err = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
-				if err != nil {
-					log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, err)
-					c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-					return
-				}
+						// Check if response exists
+						if responseData, ok := webAuthnObj["response"].(map[string]interface{}); ok {
+							log.Printf("DEBUG - Login: Found response in WebAuthn object with keys: %v", getMapKeys(responseData))
 
-				// Create a user for WebAuthn
-				user := &PasskeyUser{
-					ID:       userID,
-					Username: userName,
-					Name:     displayName,
-				}
+							// Create a manual credential request response
+							decodedID, err := decodeBase64(id)
+							if err != nil {
+								log.Printf("ERROR - Login: Failed to decode ID: %v", err)
+							} else {
+								// Get client data and signature
+								var clientDataJSON string
+								var authenticatorData string
+								var signature string
+								var userHandle string
 
-				// Get credentials for the user
-				user.Credentials = getCredentialsForUser(db, userID)
-				if len(user.Credentials) == 0 {
-					log.Printf("ERROR - Login: No passkeys registered for user: %s", req.Username)
-					c.JSON(http.StatusBadRequest, gin.H{"error": "No passkeys registered for this user"})
-					return
-				}
+								if jsonData, ok := responseData["clientDataJSON"].(string); ok {
+									clientDataJSON = jsonData
+								}
+								if authData, ok := responseData["authenticatorData"].(string); ok {
+									authenticatorData = authData
+								}
+								if sig, ok := responseData["signature"].(string); ok {
+									signature = sig
+								}
+								if handle, ok := responseData["userHandle"].(string); ok {
+									userHandle = handle
+								}
 
-				// Validate the assertion
-				credential, err := webAuthnInstance.ValidateLogin(user, *sessionData, parsedResponse)
-				if err != nil {
-					log.Printf("ERROR - Login: Invalid assertion: %v", err)
-					c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Invalid assertion: %v", err)})
-					return
-				}
-				log.Printf("DEBUG - Login: Successfully validated assertion")
+								// Skip further processing for now - log what we have
+								log.Printf("DEBUG - Login: Manual parsing - ID: %x", decodedID)
+								log.Printf("DEBUG - Login: Manual parsing - ClientDataJSON: %s", clientDataJSON[:min(len(clientDataJSON), 50)])
+								log.Printf("DEBUG - Login: Manual parsing - AuthenticatorData: %s", authenticatorData[:min(len(authenticatorData), 50)])
+								log.Printf("DEBUG - Login: Manual parsing - Signature: %s", signature[:min(len(signature), 50)])
+								if userHandle != "" {
+									log.Printf("DEBUG - Login: Manual parsing - UserHandle: %s", userHandle[:min(len(userHandle), 50)])
+								}
 
-				// Get additional roles for the user
-				var additionalRoles []string
-				rows, err := db.Query("SELECT role FROM user_roles WHERE user_id = $1", userID)
-				if err == nil {
-					defer rows.Close()
-					for rows.Next() {
-						var additionalRole string
-						if err := rows.Scan(&additionalRole); err == nil {
-							additionalRoles = append(additionalRoles, additionalRole)
+								// Try to create a more compatible version of the response JSON
+								manualJSON := fmt.Sprintf(`
+								{
+									"id": "%s",
+									"rawId": "%s",
+									"type": "public-key",
+									"response": {
+										"clientDataJSON": "%s",
+										"authenticatorData": "%s",
+										"signature": "%s"
+									}
+								}`, id, id, clientDataJSON, authenticatorData, signature)
+
+								log.Printf("DEBUG - Login: Manual JSON: %s", manualJSON)
+
+								// Try parsing with this JSON
+								parsedResponse, err = protocol.ParseCredentialRequestResponseBody(strings.NewReader(manualJSON))
+								if err != nil {
+									log.Printf("ERROR - Login: Failed to parse manual JSON: %v", err)
+								} else {
+									log.Printf("DEBUG - Login: Successfully parsed manual JSON!")
+
+									// Check if the user exists
+									var userID int
+									var userName, displayName, role string
+									var queryErr error
+									queryErr = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+									if queryErr != nil {
+										log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, queryErr)
+										c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+										return
+									}
+
+									// Continue with validation using the manually parsed response
+									// Get session ID from cookie or request
+									sessionID, _ := c.Cookie("passkey_session")
+									if sessionID == "" {
+										sessionID = req.SessionID
+										log.Printf("DEBUG - Login: Using session ID from request: %s", sessionID)
+									} else {
+										log.Printf("DEBUG - Login: Using session ID from cookie: %s", sessionID)
+									}
+
+									// Get session data
+									sessionData, ok := sessionStore[sessionID]
+									if !ok {
+										log.Printf("ERROR - Login: Session data not found for ID: %s", sessionID)
+										c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
+										return
+									}
+									defer delete(sessionStore, sessionID) // Remove session data when done
+
+									// Create a user for WebAuthn
+									user := &PasskeyUser{
+										ID:       userID,
+										Username: userName,
+										Name:     displayName,
+									}
+
+									// Get credentials for the user
+									user.Credentials = getCredentialsForUser(db, userID)
+									if len(user.Credentials) == 0 {
+										log.Printf("ERROR - Login: No passkeys registered for user: %s", req.Username)
+										c.JSON(http.StatusBadRequest, gin.H{"error": "No passkeys registered for this user"})
+										return
+									}
+
+									// Validate the assertion
+									credential, err := webAuthnInstance.ValidateLogin(user, *sessionData, parsedResponse)
+									if err != nil {
+										log.Printf("ERROR - Login: Invalid assertion: %v", err)
+										c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Invalid assertion: %v", err)})
+										return
+									}
+									log.Printf("DEBUG - Login: Successfully validated assertion")
+
+									// Get additional roles for the user
+									var additionalRoles []string
+									rows, err := db.Query("SELECT role FROM user_roles WHERE user_id = $1", userID)
+									if err == nil {
+										defer rows.Close()
+										for rows.Next() {
+											var additionalRole string
+											if err := rows.Scan(&additionalRole); err == nil {
+												additionalRoles = append(additionalRoles, additionalRole)
+											}
+										}
+									}
+
+									// Update sign count in the database
+									userIDStr := fmt.Sprintf("%d", userID)
+									_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userIDStr, credential.ID)
+									if err != nil {
+										log.Printf("WARNING - Login: Failed to update sign count: %v", err)
+									}
+
+									// Successful login
+									log.Printf("DEBUG - Login: User %s authenticated successfully with passkey", req.Username)
+									c.JSON(http.StatusOK, gin.H{
+										"id":               userID,
+										"username":         userName,
+										"name":             displayName,
+										"role":             role,
+										"additional_roles": additionalRoles,
+									})
+									return
+								}
+							}
 						}
 					}
 				}
 
-				// Update sign count in the database
-				userIDStr := fmt.Sprintf("%d", userID)
-				_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userIDStr, credential.ID)
-				if err != nil {
-					log.Printf("WARNING - Login: Failed to update sign count: %v", err)
-				}
-
-				// Successful login
-				log.Printf("DEBUG - Login: User %s authenticated successfully with passkey", req.Username)
-				c.JSON(http.StatusOK, gin.H{
-					"id":               userID,
-					"username":         userName,
-					"name":             displayName,
-					"role":             role,
-					"additional_roles": additionalRoles,
-				})
+				// Fallback to standard format
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse response: %v", err)})
 				return
-			} else {
-				log.Printf("ERROR - Login: Failed to parse WebAuthn response: %v", err)
 			}
+
+			log.Printf("DEBUG - Login: Successfully parsed WebAuthn response format")
+
+			// Get session ID from cookie or request
+			sessionID, _ := c.Cookie("passkey_session")
+			if sessionID == "" {
+				sessionID = req.SessionID
+				log.Printf("DEBUG - Login: Using session ID from request: %s", sessionID)
+			} else {
+				log.Printf("DEBUG - Login: Using session ID from cookie: %s", sessionID)
+			}
+
+			// Get session data
+			sessionData, ok := sessionStore[sessionID]
+			if !ok {
+				log.Printf("ERROR - Login: Session data not found for ID: %s", sessionID)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
+				return
+			}
+			defer delete(sessionStore, sessionID) // Remove session data when done
+
+			// Check if the user exists
+			var userID int
+			var userName, displayName, role string
+			err = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+			if err != nil {
+				log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, err)
+				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+				return
+			}
+
+			// Create a user for WebAuthn
+			user := &PasskeyUser{
+				ID:       userID,
+				Username: userName,
+				Name:     displayName,
+			}
+
+			// Get credentials for the user
+			user.Credentials = getCredentialsForUser(db, userID)
+			if len(user.Credentials) == 0 {
+				log.Printf("ERROR - Login: No passkeys registered for user: %s", req.Username)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "No passkeys registered for this user"})
+				return
+			}
+
+			// Validate the assertion
+			credential, err := webAuthnInstance.ValidateLogin(user, *sessionData, parsedResponse)
+			if err != nil {
+				log.Printf("ERROR - Login: Invalid assertion: %v", err)
+				c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Invalid assertion: %v", err)})
+				return
+			}
+			log.Printf("DEBUG - Login: Successfully validated assertion")
+
+			// Get additional roles for the user
+			var additionalRoles []string
+			rows, err := db.Query("SELECT role FROM user_roles WHERE user_id = $1", userID)
+			if err == nil {
+				defer rows.Close()
+				for rows.Next() {
+					var additionalRole string
+					if err := rows.Scan(&additionalRole); err == nil {
+						additionalRoles = append(additionalRoles, additionalRole)
+					}
+				}
+			}
+
+			// Update sign count in the database
+			userIDStr := fmt.Sprintf("%d", userID)
+			_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userIDStr, credential.ID)
+			if err != nil {
+				log.Printf("WARNING - Login: Failed to update sign count: %v", err)
+			}
+
+			// Successful login
+			log.Printf("DEBUG - Login: User %s authenticated successfully with passkey", req.Username)
+			c.JSON(http.StatusOK, gin.H{
+				"id":               userID,
+				"username":         userName,
+				"name":             displayName,
+				"role":             role,
+				"additional_roles": additionalRoles,
+			})
+			return
 		}
 	}
 
