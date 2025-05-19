@@ -593,23 +593,20 @@ func hasPasskey(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Double-check directly in the database
-	hasPasskey, err := models.HasPasskey(db, user.UserID)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Database error checking passkeys: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check passkeys"})
-		return
-	}
-
-	// Get actual count for better debugging
+	// Double-check directly in the database with a cleaner query
 	var count int
 	countQuery := `SELECT COUNT(*) FROM passkey_credentials WHERE user_id = $1`
 	err = db.QueryRow(countQuery, user.UserID).Scan(&count)
 	if err != nil {
 		fmt.Printf("❌ [SERVER DEBUG] Error counting credentials: %v\n", err)
-	} else {
-		fmt.Printf("🔑 [SERVER DEBUG] Found %d credentials in database for user %s\n", count, user.UserID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check passkeys"})
+		return
 	}
+
+	fmt.Printf("🔑 [SERVER DEBUG] Found %d credentials in database for user %s\n", count, user.UserID)
+
+	// Use the actual count to determine if user has passkeys
+	hasPasskey := count > 0
 
 	if hasPasskey {
 		fmt.Printf("✅ [SERVER DEBUG] User has passkeys according to database check\n")
