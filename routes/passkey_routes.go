@@ -320,9 +320,8 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 	var userID int
 	var userName, displayName string
 	var err error
-	err = db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
+	err = db.QueryRow("SELECT id, username, name FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName)
 	if err != nil {
-		log.Printf("ERROR - User not found for ID: %d, Error: %v", req.UserID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -534,19 +533,137 @@ func handleBeginLogin(c *gin.Context, db *sql.DB) {
 func handleFinishLogin(c *gin.Context, db *sql.DB) {
 	// Parse request
 	var req struct {
-		Username          string `json:"username"`
-		CredentialID      string `json:"credential_id"`
-		ClientData        string `json:"client_data"`
-		AuthenticatorData string `json:"authenticator_data"`
-		Signature         string `json:"signature"`
-		Challenge         string `json:"challenge"`
-		SessionID         string `json:"session_id"`
+		Username          string                 `json:"username"`
+		CredentialID      string                 `json:"credential_id"`
+		ClientData        string                 `json:"client_data"`
+		AuthenticatorData string                 `json:"authenticator_data"`
+		Signature         string                 `json:"signature"`
+		Challenge         string                 `json:"challenge"`
+		SessionID         string                 `json:"session_id"`
+		WebAuthnResponse  map[string]interface{} `json:"webauthn_response"`
 	}
 
+	// Log raw request body for debugging
+	rawData, _ := c.GetRawData()
+	log.Printf("DEBUG - Login raw request body: %s", string(rawData))
+
+	// Reset request body for binding
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(rawData))
+
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		log.Printf("ERROR - Login: Failed to parse request JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
+
+	log.Printf("DEBUG - Login: Received authentication data for username: %s", req.Username)
+
+	// Try using WebAuthnResponse if provided
+	if len(req.WebAuthnResponse) > 0 {
+		log.Printf("DEBUG - Login: WebAuthn response format found, attempting to use it")
+
+		// Convert the WebAuthn response to JSON for protocol parsing
+		webAuthnJSON, err := json.Marshal(req.WebAuthnResponse)
+		if err != nil {
+			log.Printf("ERROR - Login: Failed to marshal WebAuthn response: %v", err)
+		} else {
+			log.Printf("DEBUG - Login: WebAuthn response JSON: %s", string(webAuthnJSON))
+
+			// Try parsing with the WebAuthn library
+			parsedResponse, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(webAuthnJSON))
+			if err == nil {
+				log.Printf("DEBUG - Login: Successfully parsed WebAuthn response format")
+
+				// Get session ID from cookie or request
+				sessionID, _ := c.Cookie("passkey_session")
+				if sessionID == "" {
+					sessionID = req.SessionID
+					log.Printf("DEBUG - Login: Using session ID from request: %s", sessionID)
+				} else {
+					log.Printf("DEBUG - Login: Using session ID from cookie: %s", sessionID)
+				}
+
+				// Get session data
+				sessionData, ok := sessionStore[sessionID]
+				if !ok {
+					log.Printf("ERROR - Login: Session data not found for ID: %s", sessionID)
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
+					return
+				}
+				defer delete(sessionStore, sessionID) // Remove session data when done
+
+				// Check if the user exists
+				var userID int
+				var userName, displayName, role string
+				err = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+				if err != nil {
+					log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, err)
+					c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+					return
+				}
+
+				// Create a user for WebAuthn
+				user := &PasskeyUser{
+					ID:       userID,
+					Username: userName,
+					Name:     displayName,
+				}
+
+				// Get credentials for the user
+				user.Credentials = getCredentialsForUser(db, userID)
+				if len(user.Credentials) == 0 {
+					log.Printf("ERROR - Login: No passkeys registered for user: %s", req.Username)
+					c.JSON(http.StatusBadRequest, gin.H{"error": "No passkeys registered for this user"})
+					return
+				}
+
+				// Validate the assertion
+				credential, err := webAuthnInstance.ValidateLogin(user, *sessionData, parsedResponse)
+				if err != nil {
+					log.Printf("ERROR - Login: Invalid assertion: %v", err)
+					c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Invalid assertion: %v", err)})
+					return
+				}
+				log.Printf("DEBUG - Login: Successfully validated assertion")
+
+				// Get additional roles for the user
+				var additionalRoles []string
+				rows, err := db.Query("SELECT role FROM user_roles WHERE user_id = $1", userID)
+				if err == nil {
+					defer rows.Close()
+					for rows.Next() {
+						var additionalRole string
+						if err := rows.Scan(&additionalRole); err == nil {
+							additionalRoles = append(additionalRoles, additionalRole)
+						}
+					}
+				}
+
+				// Update sign count in the database
+				userIDStr := fmt.Sprintf("%d", userID)
+				_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userIDStr, credential.ID)
+				if err != nil {
+					log.Printf("WARNING - Login: Failed to update sign count: %v", err)
+				}
+
+				// Successful login
+				log.Printf("DEBUG - Login: User %s authenticated successfully with passkey", req.Username)
+				c.JSON(http.StatusOK, gin.H{
+					"id":               userID,
+					"username":         userName,
+					"name":             displayName,
+					"role":             role,
+					"additional_roles": additionalRoles,
+				})
+				return
+			} else {
+				log.Printf("ERROR - Login: Failed to parse WebAuthn response: %v", err)
+			}
+		}
+	}
+
+	// If we reach here, either WebAuthnResponse was not provided or parsing failed
+	// Continue with the original implementation
 
 	// Get session ID from cookie or request
 	sessionID, _ := c.Cookie("passkey_session")
@@ -557,6 +674,7 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 	// Get session data
 	sessionData, ok := sessionStore[sessionID]
 	if !ok {
+		log.Printf("ERROR - Login: Session data not found for ID: %s", sessionID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
 		return
 	}
@@ -565,8 +683,10 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 	// Check if the user exists
 	var userID int
 	var userName, displayName, role string
-	err := db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+	var err error
+	err = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
 	if err != nil {
+		log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
