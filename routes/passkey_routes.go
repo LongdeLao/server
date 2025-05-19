@@ -64,8 +64,7 @@ func SetupPasskeyRoutes(router *gin.RouterGroup, db *sql.DB) {
 	webAuthnInstance, err = webauthn.New(&webauthn.Config{
 		RPDisplayName: rpName,
 		RPID:          rpDomain,
-		// RPOrigin is not a valid field in newer versions of the library
-		// The library now derives this from the RPID
+		RPOrigins:     []string{fmt.Sprintf("https://%s", rpDomain)},
 	})
 	if err != nil {
 		log.Fatalf("Error initializing WebAuthn: %v", err)
