@@ -236,10 +236,16 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 	}
 
 	// Insert credential into database
+	userIDStr := fmt.Sprintf("%d", userID)
+	attestationType := "none"
+	if credential.AttestationType != "" {
+		attestationType = credential.AttestationType
+	}
+
 	_, err = db.Exec(`
 		INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count)
 		VALUES ($1, $2, $3, $4, $5, $6)
-	`, userID, credential.ID, credential.PublicKey, credential.AttestationType, credential.Authenticator.AAGUID, credential.Authenticator.SignCount)
+	`, userIDStr, credential.ID, credential.PublicKey, attestationType, credential.Authenticator.AAGUID, credential.Authenticator.SignCount)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save credential: %v", err)})
 		return
@@ -410,7 +416,8 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 	}
 
 	// Update sign count in the database
-	_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userID, credentialIDBytes)
+	userIDStr := fmt.Sprintf("%d", userID)
+	_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userIDStr, credentialIDBytes)
 	if err != nil {
 		log.Printf("Failed to update sign count: %v", err)
 	}
@@ -427,11 +434,12 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 
 // Get passkey credentials for a user from the database
 func getCredentialsForUser(db *sql.DB, userID int) []webauthn.Credential {
+	userIDStr := fmt.Sprintf("%d", userID)
 	rows, err := db.Query(`
 		SELECT credential_id, public_key, attestation_type, aaguid, sign_count
 		FROM passkey_credentials
 		WHERE user_id = $1
-	`, userID)
+	`, userIDStr)
 	if err != nil {
 		log.Printf("Error getting credentials: %v", err)
 		return nil
