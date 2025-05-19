@@ -1,10 +1,12 @@
 package routes
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -187,20 +189,35 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 		SessionID    string `json:"session_id"`
 	}
 
+	// Log raw request body for debugging
+	rawData, _ := c.GetRawData()
+	log.Printf("DEBUG - Raw request body: %s", string(rawData))
+
+	// Reset request body for binding
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(rawData))
+
 	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		log.Printf("ERROR - Failed to parse request JSON: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
 		return
 	}
+
+	log.Printf("DEBUG - Received registration data: username=%s, userID=%d, credentialID length=%d, publicKey length=%d, clientData length=%d",
+		req.Username, req.UserID, len(req.CredentialID), len(req.PublicKey), len(req.ClientData))
 
 	// Get session ID from cookie or request
 	sessionID, _ := c.Cookie("passkey_session")
 	if sessionID == "" {
 		sessionID = req.SessionID
+		log.Printf("DEBUG - Using session ID from request: %s", sessionID)
+	} else {
+		log.Printf("DEBUG - Using session ID from cookie: %s", sessionID)
 	}
 
 	// Get session data
 	sessionData, ok := sessionStore[sessionID]
 	if !ok {
+		log.Printf("ERROR - Session data not found for ID: %s", sessionID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
 		return
 	}
@@ -211,6 +228,7 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 	var userName, displayName string
 	err := db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
 	if err != nil {
+		log.Printf("ERROR - User not found for ID: %d, Error: %v", req.UserID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -225,13 +243,19 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 	// Parse client data JSON
 	clientDataBytes, err := base64.StdEncoding.DecodeString(req.ClientData)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data"})
+		log.Printf("ERROR - Failed to decode client data from base64: %v", err)
+		log.Printf("DEBUG - Client data (first 100 chars): %s", req.ClientData[:min(len(req.ClientData), 100)])
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data encoding"})
 		return
 	}
+
+	log.Printf("DEBUG - Decoded client data: %s", string(clientDataBytes))
 
 	// Create the credential creation response
 	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(string(clientDataBytes)))
 	if err != nil {
+		log.Printf("ERROR - Failed to parse credential creation response: %v", err)
+		log.Printf("DEBUG - Client data JSON: %s", string(clientDataBytes))
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse response: %v", err)})
 		return
 	}
