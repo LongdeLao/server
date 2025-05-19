@@ -1014,3 +1014,4 @@ func getCredentialsForUser(db *sql.DB, userID int) []webauthn.Credential {
 
 	return credentials
 }
+
