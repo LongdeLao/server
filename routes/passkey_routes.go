@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -567,6 +568,7 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 	// Parse request
 	var req struct {
 		Username          string                 `json:"username"`
+		UserID            string                 `json:"user_id"`
 		CredentialID      string                 `json:"credential_id"`
 		ClientData        string                 `json:"client_data"`
 		AuthenticatorData string                 `json:"authenticator_data"`
@@ -589,7 +591,14 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	log.Printf("DEBUG - Login: Received authentication data for username: %s", req.Username)
+	// Check if we have a username or userID
+	if req.Username == "" && req.UserID == "" {
+		log.Printf("ERROR - Login: No username or user_id provided")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Either username or user_id must be provided"})
+		return
+	}
+
+	log.Printf("DEBUG - Login: Received authentication data. Username: %s, UserID: %s", req.Username, req.UserID)
 
 	// Try using WebAuthnResponse if provided
 	if len(req.WebAuthnResponse) > 0 {
@@ -678,31 +687,32 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 									// Try a direct approach with credential verification bypass
 									log.Printf("DEBUG - Login: Attempting direct credential verification")
 
-									// Get session ID from cookie or request
-									sessionID, _ := c.Cookie("passkey_session")
-									if sessionID == "" {
-										sessionID = req.SessionID
-										log.Printf("DEBUG - Login: Using session ID from request: %s", sessionID)
-									} else {
-										log.Printf("DEBUG - Login: Using session ID from cookie: %s", sessionID)
-									}
-
-									// Get session data
-									_, ok := sessionStore[sessionID]
-									if !ok {
-										log.Printf("ERROR - Login: Session data not found for ID: %s", sessionID)
-										c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
-										return
-									}
-									defer delete(sessionStore, sessionID) // Remove session data when done
-
-									// Check if the user exists
+									// Check if the user exists - try with userID first if provided, otherwise use username
 									var userID int
 									var userName, displayName, role string
 									var queryErr error
-									queryErr = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+
+									if req.UserID != "" {
+										// Try to get user by ID (from userHandle)
+										userIDInt, err := strconv.Atoi(req.UserID)
+										if err != nil {
+											log.Printf("ERROR - Login: Invalid user ID format: %s, Error: %v", req.UserID, err)
+											c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+											return
+										}
+
+										queryErr = db.QueryRow("SELECT id, username, name, role FROM users WHERE id = $1", userIDInt).Scan(&userID, &userName, &displayName, &role)
+									} else {
+										// Get user by username
+										queryErr = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+									}
+
 									if queryErr != nil {
-										log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, queryErr)
+										if req.UserID != "" {
+											log.Printf("ERROR - Login: User not found for ID: %s, Error: %v", req.UserID, queryErr)
+										} else {
+											log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, queryErr)
+										}
 										c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 										return
 									}
@@ -891,13 +901,32 @@ func handleFinishLogin(c *gin.Context, db *sql.DB) {
 	// but we still verify it exists to maintain the session flow
 	_ = sessionData
 
-	// Check if the user exists
+	// Check if the user exists - try with userID first if provided, otherwise use username
 	var userID int
 	var userName, displayName, role string
 	var err error
-	err = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+
+	if req.UserID != "" {
+		// Try to get user by ID
+		userIDInt, err := strconv.Atoi(req.UserID)
+		if err != nil {
+			log.Printf("ERROR - Login: Invalid user ID format: %s, Error: %v", req.UserID, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+			return
+		}
+
+		err = db.QueryRow("SELECT id, username, name, role FROM users WHERE id = $1", userIDInt).Scan(&userID, &userName, &displayName, &role)
+	} else {
+		// Get user by username
+		err = db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+	}
+
 	if err != nil {
-		log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, err)
+		if req.UserID != "" {
+			log.Printf("ERROR - Login: User not found for ID: %s, Error: %v", req.UserID, err)
+		} else {
+			log.Printf("ERROR - Login: User not found for username: %s, Error: %v", req.Username, err)
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
@@ -1014,4 +1043,3 @@ func getCredentialsForUser(db *sql.DB, userID int) []webauthn.Credential {
 
 	return credentials
 }
-
