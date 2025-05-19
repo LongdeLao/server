@@ -1,670 +1,467 @@
 package routes
 
 import (
-	"bytes"
+	"crypto/rand"
 	"database/sql"
-	"encoding/json"
-	"fmt"
-	"io"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"server/models"
-	"strings"
-	"sync"
-
 	"encoding/base64"
+	"fmt"
+	"log"
+	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
-// Global WebAuthn instance
-var (
-	webAuthnConfig *webauthn.WebAuthn
-	setupOnce      sync.Once
-	sessionStore   = make(map[string]webauthn.SessionData)
-	sessionMutex   sync.RWMutex
+const (
+	// Domain for the WebAuthn relying party
+	rpDomain = "connect.hsannu.com"
+	// Display name for the WebAuthn relying party
+	rpName = "HSANNU"
 )
 
-// initWebAuthn initializes the WebAuthn configuration
-func initWebAuthn() {
-	setupOnce.Do(func() {
-		// Get the RPDisplayName from environment or default to "HSANNU"
-		rpDisplayName := os.Getenv("WEBAUTHN_RP_DISPLAY_NAME")
-		if rpDisplayName == "" {
-			rpDisplayName = "HSANNU"
-		}
+var (
+	// WebAuthn instance
+	webAuthnInstance *webauthn.WebAuthn
+	// Session storage for WebAuthn challenges
+	sessionStore = make(map[string]*webauthn.SessionData)
+)
 
-		// Get the RPID from environment or default to hostname
-		rpID := os.Getenv("WEBAUTHN_RP_ID")
-		if rpID == "" {
-			rpID = "connect.hsannu.com" // Changed from localhost to production domain
-		}
-
-		rpOrigin := os.Getenv("WEBAUTHN_RP_ORIGIN")
-		if rpOrigin == "" {
-			rpOrigin = "https://connect.hsannu.com" // Changed to HTTPS production URL
-		}
-
-		var err error
-		config := &webauthn.Config{
-			RPDisplayName: rpDisplayName,                                   // Display name for your app
-			RPID:          rpID,                                            // Your domain
-			RPOrigins:     []string{rpOrigin, "http://connect.hsannu.com"}, // Allow both HTTP and HTTPS
-		}
-
-		webAuthnConfig, err = webauthn.New(config)
-
-		if err != nil {
-			panic(fmt.Sprintf("Failed to create WebAuthn instance: %v", err))
-		}
-
-		fmt.Printf("🔑 [SERVER DEBUG] WebAuthn initialized with RPID: %s, RPOrigins: %v\n",
-			webAuthnConfig.Config.RPID, webAuthnConfig.Config.RPOrigins)
-	})
+// User represents a user in the WebAuthn system
+type PasskeyUser struct {
+	ID          int
+	Name        string
+	Username    string
+	Credentials []webauthn.Credential
 }
 
-// SetupPasskeyRoutes registers all passkey related routes
+// Implementation of webauthn.User interface for our PasskeyUser
+func (u *PasskeyUser) WebAuthnID() []byte {
+	return []byte(fmt.Sprintf("%d", u.ID))
+}
+
+func (u *PasskeyUser) WebAuthnName() string {
+	return u.Username
+}
+
+func (u *PasskeyUser) WebAuthnDisplayName() string {
+	return u.Name
+}
+
+func (u *PasskeyUser) WebAuthnIcon() string {
+	return ""
+}
+
+func (u *PasskeyUser) WebAuthnCredentials() []webauthn.Credential {
+	return u.Credentials
+}
+
+// SetupPasskeyRoutes initializes WebAuthn and sets up the routes
 func SetupPasskeyRoutes(router *gin.RouterGroup, db *sql.DB) {
 	// Initialize WebAuthn
-	initWebAuthn()
-
-	// Register passkey routes
-	router.POST("/begin-register-passkey", func(c *gin.Context) {
-		beginRegisterPasskey(c, db)
+	var err error
+	webAuthnInstance, err = webauthn.New(&webauthn.Config{
+		RPDisplayName: rpName,
+		RPID:          rpDomain,
+		// RPOrigin is not a valid field in newer versions of the library
+		// The library now derives this from the RPID
 	})
-
-	// Use our custom implementation for finishing registration
-	router.POST("/finish-register-passkey", func(c *gin.Context) {
-		CustomFinishRegistration(c, db)
-	})
-
-	router.POST("/begin-login-passkey", func(c *gin.Context) {
-		beginLoginPasskey(c, db)
-	})
-
-	router.POST("/finish-login-passkey", func(c *gin.Context) {
-		finishLoginPasskey(c, db)
-	})
-
-	// Route to check if a user has a passkey
-	router.GET("/has-passkey/:username", func(c *gin.Context) {
-		hasPasskey(c, db)
-	})
-
-	// Route to delete a user's passkey
-	router.DELETE("/delete-passkey/:username", func(c *gin.Context) {
-		deletePasskey(c, db)
-	})
-}
-
-// storeSession stores session data in memory
-func storeSession(username string, data webauthn.SessionData) {
-	sessionMutex.Lock()
-	defer sessionMutex.Unlock()
-	sessionStore[username] = data
-}
-
-// getSession retrieves session data from memory
-func getSession(username string) (webauthn.SessionData, bool) {
-	sessionMutex.RLock()
-	defer sessionMutex.RUnlock()
-	session, ok := sessionStore[username]
-	return session, ok
-}
-
-// removeSession removes session data from memory
-func removeSession(username string) {
-	sessionMutex.Lock()
-	defer sessionMutex.Unlock()
-	delete(sessionStore, username)
-}
-
-// beginRegisterPasskey initiates passkey registration
-func beginRegisterPasskey(c *gin.Context, db *sql.DB) {
-	fmt.Println("🔑 [SERVER DEBUG] Beginning passkey registration")
-
-	var request struct {
-		Username string `json:"username" binding:"required"`
+	if err != nil {
+		log.Fatalf("Error initializing WebAuthn: %v", err)
 	}
 
-	// Log raw request body
-	rawData, err := io.ReadAll(c.Request.Body)
+	// Create passkey credentials table if not exists
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS passkey_credentials (
+		id SERIAL PRIMARY KEY,
+		user_id INTEGER NOT NULL,
+		credential_id BYTEA NOT NULL UNIQUE,
+		public_key BYTEA NOT NULL,
+		attestation_type TEXT NOT NULL,
+		aaguid BYTEA,
+		sign_count BIGINT NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	`
+	_, err = db.Exec(createTableSQL)
 	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to read request body: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
+		log.Fatalf("Error creating passkey_credentials table: %v", err)
+	}
+
+	// Routes for registration
+	router.POST("/register-passkey-begin", func(c *gin.Context) {
+		handleBeginRegistration(c, db)
+	})
+	router.POST("/register-passkey-finish", func(c *gin.Context) {
+		handleFinishRegistration(c, db)
+	})
+
+	// Routes for authentication
+	router.POST("/login-passkey-begin", func(c *gin.Context) {
+		handleBeginLogin(c, db)
+	})
+	router.POST("/login-passkey-finish", func(c *gin.Context) {
+		handleFinishLogin(c, db)
+	})
+}
+
+// Generate a session ID for temporary storage
+func generateSessionID() string {
+	b := make([]byte, 32)
+	rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// Handle the beginning of passkey registration
+func handleBeginRegistration(c *gin.Context, db *sql.DB) {
+	// Parse request
+	var req struct {
+		Username string `json:"username"`
+		UserID   int    `json:"user_id"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	// Print the raw request body
-	fmt.Printf("🔑 [SERVER DEBUG] Raw request: %s\n", string(rawData))
-
-	// Restore the body for binding
-	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(rawData))
-
-	if err := c.BindJSON(&request); err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] JSON binding error: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-		return
-	}
-
-	fmt.Printf("🔑 [SERVER DEBUG] Registration requested for username: %s\n", request.Username)
-
-	// Get user for webauthn
-	user, err := models.GetUserForWebAuthn(db, request.Username)
+	// Check if the user exists in the database
+	var userID int
+	var userName, displayName string
+	err := db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
 	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-	fmt.Printf("🔑 [SERVER DEBUG] User found: ID=%s, Username=%s\n", user.UserID, user.Username)
 
-	// Log WebAuthn configuration
-	fmt.Printf("🔑 [SERVER DEBUG] WebAuthn config: RPDisplayName=%s, RPID=%s\n",
-		webAuthnConfig.Config.RPDisplayName, webAuthnConfig.Config.RPID)
+	// Create a user for WebAuthn
+	user := &PasskeyUser{
+		ID:       userID,
+		Username: userName,
+		Name:     displayName,
+	}
 
-	// Create options for registering a new credential
-	fmt.Println("🔑 [SERVER DEBUG] Generating credential creation options")
-	options, sessionData, err := webAuthnConfig.BeginRegistration(user)
+	// Get existing credentials
+	user.Credentials = getCredentialsForUser(db, userID)
+
+	// Create registration options and session data
+	_, sessionData, err := webAuthnInstance.BeginRegistration(user)
 	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to begin registration: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to begin registration: %v", err)})
 		return
 	}
 
-	// Log session data and challenge
-	fmt.Printf("🔑 [SERVER DEBUG] Session data generated, challenge length: %d\n", len(sessionData.Challenge))
-	fmt.Printf("🔑 [SERVER DEBUG] Challenge (hex): %x\n", sessionData.Challenge)
-
 	// Store session data temporarily
-	storeSession(request.Username, *sessionData)
-	fmt.Printf("🔑 [SERVER DEBUG] Session stored for user: %s\n", request.Username)
+	sessionID := generateSessionID()
+	sessionStore[sessionID] = sessionData
 
-	// Log the response options
-	optionsJSON, err := json.Marshal(options)
-	if err == nil {
-		fmt.Printf("🔑 [SERVER DEBUG] Response options: %s\n", string(optionsJSON))
-	}
+	// Set cookie with session ID
+	c.SetCookie("passkey_session", sessionID, 300, "/", rpDomain, true, true)
 
-	// Return options to client
-	fmt.Println("🔑 [SERVER DEBUG] Sending registration options to client")
-	c.JSON(http.StatusOK, options)
-}
-
-// CustomFinishRegistration is a custom implementation for processing the attestation response
-func CustomFinishRegistration(c *gin.Context, db *sql.DB) {
-	fmt.Println("🔑 [SERVER DEBUG] Starting custom registration finish")
-
-	// Log raw request body
-	rawData, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to read request body: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
-		return
-	}
-
-	// Print the raw request body
-	fmt.Printf("🔑 [SERVER DEBUG] Raw finish request: %s\n", string(rawData))
-
-	// Restore the body for binding
-	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(rawData))
-
-	var request struct {
-		Username string `json:"username" binding:"required"`
-		Response struct {
-			AttestationObject string `json:"attestationObject" binding:"required"`
-			ClientDataJSON    string `json:"clientDataJSON" binding:"required"`
-		} `json:"response" binding:"required"`
-	}
-
-	if err := c.BindJSON(&request); err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] JSON binding error for finish: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-		return
-	}
-
-	fmt.Printf("🔑 [SERVER DEBUG] Registration completion for username: %s\n", request.Username)
-
-	// Get user for webauthn
-	user, err := models.GetUserForWebAuthn(db, request.Username)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-	fmt.Printf("🔑 [SERVER DEBUG] User found: ID=%s, Username=%s\n", user.UserID, user.Username)
-
-	// Decode attestation object
-	attestationBytes, err := base64.StdEncoding.DecodeString(request.Response.AttestationObject)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to decode attestation object: %v\n", err)
-		attestationBytes, err = base64.RawStdEncoding.DecodeString(request.Response.AttestationObject)
-		if err != nil {
-			fmt.Printf("❌ [SERVER DEBUG] Failed to decode with RawStdEncoding: %v\n", err)
-
-			// Try URL-safe base64
-			tmp := request.Response.AttestationObject
-			tmp = strings.ReplaceAll(tmp, "-", "+")
-			tmp = strings.ReplaceAll(tmp, "_", "/")
-			if len(tmp)%4 != 0 {
-				tmp += strings.Repeat("=", 4-len(tmp)%4)
-			}
-
-			attestationBytes, err = base64.StdEncoding.DecodeString(tmp)
-			if err != nil {
-				fmt.Printf("❌ [SERVER DEBUG] All decode attempts failed for attestation: %v\n", err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid attestation data encoding"})
-				return
-			}
-		}
-	}
-	fmt.Printf("🔑 [SERVER DEBUG] Attestation object successfully decoded, length: %d bytes\n", len(attestationBytes))
-
-	// Decode client data
-	clientDataBytes, err := base64.StdEncoding.DecodeString(request.Response.ClientDataJSON)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to decode client data: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data encoding"})
-		return
-	}
-	fmt.Printf("🔑 [SERVER DEBUG] Client data JSON: %s\n", string(clientDataBytes))
-
-	// Parse client data to validate challenge
-	var clientData struct {
-		Type      string `json:"type"`
-		Challenge string `json:"challenge"`
-		Origin    string `json:"origin"`
-	}
-
-	if err := json.Unmarshal(clientDataBytes, &clientData); err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to parse client data: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data format"})
-		return
-	}
-
-	// Extract credential ID and public key from attestation
-	// This is a simplified extraction - in a production system you would properly parse the CBOR
-	// For now, we'll extract what we need from the attestation
-
-	// Extract credential ID from attestation - in real implementation, you would properly parse CBOR
-	// For now, we'll use a heuristic to find the credential ID
-	var credentialID []byte
-
-	// Look for credential ID pattern in the attestation object
-	// In real attestation objects, the credential ID is usually found after the RP ID hash
-	// This is a simplified approach - a real implementation would use a CBOR library
-	if len(attestationBytes) > 100 {
-		// In a simplified CBOR parser, we assume credential ID is in the authData section
-		// We find the auth data section and extract after byte position ~42
-		// In a real implementation, you would use proper CBOR parsing
-		credentialID = attestationBytes[len(attestationBytes)-40 : len(attestationBytes)-20]
-	} else {
-		// Fallback to a hash of the attestation if we can't parse
-		hash := make([]byte, 16)
-		for i := 0; i < len(attestationBytes) && i < 16; i++ {
-			hash[i] = attestationBytes[i]
-		}
-		credentialID = hash
-	}
-
-	fmt.Printf("🔑 [SERVER DEBUG] Extracted credential ID, length: %d bytes\n", len(credentialID))
-
-	// Create credential with the real credential ID
-	credential := webauthn.Credential{
-		ID:        credentialID,
-		PublicKey: attestationBytes[0:32], // Use part of attestation as public key
-		Authenticator: webauthn.Authenticator{
-			AAGUID:    []byte("real-credential-aaguid"),
-			SignCount: 1,
-		},
-	}
-
-	// Save the credential to the database
-	if err := models.SavePasskeyCredential(db, user.UserID, credential); err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to save credential: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save credential"})
-		return
-	}
-
-	fmt.Printf("✅ [SERVER DEBUG] Successfully saved credential with ID length: %d\n", len(credential.ID))
-
-	// Return success - with more detailed information
-	fmt.Printf("🔑 [SERVER DEBUG] Custom registration successful for user: %s\n", request.Username)
+	// Return challenge to client
 	c.JSON(http.StatusOK, gin.H{
-		"success":       true,
-		"registered":    true,
-		"username":      request.Username,
-		"credential_id": base64.StdEncoding.EncodeToString(credentialID),
+		"challenge":      sessionData.Challenge,
+		"relyingPartyId": rpDomain,
+		"sessionId":      sessionID,
 	})
 }
 
-// beginLoginPasskey initiates passkey authentication
-func beginLoginPasskey(c *gin.Context, db *sql.DB) {
-	var request struct {
-		Username string `json:"username" binding:"required"`
+// Handle the completion of passkey registration
+func handleFinishRegistration(c *gin.Context, db *sql.DB) {
+	// Parse request
+	var req struct {
+		Username     string `json:"username"`
+		UserID       int    `json:"user_id"`
+		CredentialID string `json:"credential_id"`
+		PublicKey    string `json:"public_key"`
+		ClientData   string `json:"client_data"`
+		Challenge    string `json:"challenge"`
+		SessionID    string `json:"session_id"`
 	}
 
-	if err := c.BindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	// Get user for webauthn
-	user, err := models.GetUserForWebAuthn(db, request.Username)
+	// Get session ID from cookie or request
+	sessionID, _ := c.Cookie("passkey_session")
+	if sessionID == "" {
+		sessionID = req.SessionID
+	}
+
+	// Get session data
+	sessionData, ok := sessionStore[sessionID]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
+		return
+	}
+	defer delete(sessionStore, sessionID) // Remove session data when done
+
+	// Verify the user exists
+	var userID int
+	var userName, displayName string
+	err := db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Check if user has any passkeys registered
+	// Create a user for WebAuthn
+	user := &PasskeyUser{
+		ID:       userID,
+		Username: userName,
+		Name:     displayName,
+	}
+
+	// Parse client data JSON
+	clientDataBytes, err := base64.StdEncoding.DecodeString(req.ClientData)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data"})
+		return
+	}
+
+	// Create the credential creation response
+	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(string(clientDataBytes)))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse response: %v", err)})
+		return
+	}
+
+	// Finish registration
+	credential, err := webAuthnInstance.CreateCredential(user, *sessionData, parsedResponse)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to create credential: %v", err)})
+		return
+	}
+
+	// Insert credential into database
+	_, err = db.Exec(`
+		INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, userID, credential.ID, credential.PublicKey, credential.AttestationType, credential.Authenticator.AAGUID, credential.Authenticator.SignCount)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save credential: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Passkey registered successfully",
+	})
+}
+
+// Handle the beginning of passkey login
+func handleBeginLogin(c *gin.Context, db *sql.DB) {
+	// Parse request
+	var req struct {
+		Username string `json:"username"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	// Check if the user exists
+	var userID int
+	var userName, displayName string
+	err := db.QueryRow("SELECT id, username, name FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Create a user for WebAuthn
+	user := &PasskeyUser{
+		ID:       userID,
+		Username: userName,
+		Name:     displayName,
+	}
+
+	// Get credentials for the user
+	user.Credentials = getCredentialsForUser(db, userID)
 	if len(user.Credentials) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No passkeys registered for this user"})
 		return
 	}
 
-	// Create options for authentication
-	options, sessionData, err := webAuthnConfig.BeginLogin(user)
+	// Begin authentication - we don't need the options, just the session data
+	_, sessionData, err := webAuthnInstance.BeginLogin(user)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to begin authentication"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to begin login: %v", err)})
 		return
 	}
 
 	// Store session data temporarily
-	storeSession(request.Username, *sessionData)
+	sessionID := generateSessionID()
+	sessionStore[sessionID] = sessionData
 
-	// Return options to client
-	c.JSON(http.StatusOK, options)
-}
+	// Set cookie with session ID
+	c.SetCookie("passkey_session", sessionID, 300, "/", rpDomain, true, true)
 
-// finishLoginPasskey completes passkey authentication
-func finishLoginPasskey(c *gin.Context, db *sql.DB) {
-	fmt.Println("🔑 [SERVER DEBUG] Starting custom login finish")
-
-	// Log raw request body
-	rawData, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to read request body: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read request body"})
-		return
-	}
-
-	// Print the raw request body
-	fmt.Printf("🔑 [SERVER DEBUG] Raw login finish request: %s\n", string(rawData))
-
-	// Restore the body for binding
-	c.Request.Body = ioutil.NopCloser(bytes.NewBuffer(rawData))
-
-	var request struct {
-		Username string `json:"username" binding:"required"`
-		Response struct {
-			AuthenticatorData string `json:"authenticatorData" binding:"required"`
-			ClientDataJSON    string `json:"clientDataJSON" binding:"required"`
-			Signature         string `json:"signature" binding:"required"`
-			UserID            string `json:"userID"`
-			CredentialID      string `json:"credentialID" binding:"required"`
-		} `json:"response" binding:"required"`
-	}
-
-	if err := c.BindJSON(&request); err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] JSON binding error for login finish: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
-		return
-	}
-
-	fmt.Printf("🔑 [SERVER DEBUG] Login completion for username: %s\n", request.Username)
-
-	// Get user for webauthn
-	user, err := models.GetUserForWebAuthn(db, request.Username)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-	fmt.Printf("🔑 [SERVER DEBUG] User found: ID=%s, Username=%s with %d credentials\n",
-		user.UserID, user.Username, len(user.Credentials))
-
-	// Decode credential ID from base64
-	credentialID, err := base64.StdEncoding.DecodeString(request.Response.CredentialID)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to decode credential ID: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid credential ID encoding"})
-		return
-	}
-	fmt.Printf("🔑 [SERVER DEBUG] Decoded credential ID, length: %d bytes\n", len(credentialID))
-
-	// Check if the credential exists in the database
-	credentialExists := false
-	var matchingCredential *webauthn.Credential
-
-	// Try to find the credential in user's registered credentials
+	// Return challenge and credential IDs to the client
+	credentialIDs := make([]string, len(user.Credentials))
 	for i, cred := range user.Credentials {
-		if bytes.Equal(cred.ID, credentialID) {
-			credentialExists = true
-			// Get a pointer to the actual credential in the slice
-			matchingCredential = &user.Credentials[i]
-			break
-		}
+		credentialIDs[i] = base64.StdEncoding.EncodeToString(cred.ID)
 	}
 
-	// If we can't find the credential, check manually in the database
-	if !credentialExists {
-		var foundCredID []byte
-		var credCount int
+	c.JSON(http.StatusOK, gin.H{
+		"challenge":     sessionData.Challenge,
+		"credentialIds": credentialIDs,
+		"sessionId":     sessionID,
+	})
+}
 
-		// Count how many credentials exist for this user
-		countQuery := `SELECT COUNT(*) FROM passkey_credentials WHERE user_id = $1`
-		err = db.QueryRow(countQuery, user.UserID).Scan(&credCount)
-		if err != nil {
-			fmt.Printf("❌ [SERVER DEBUG] Error counting credentials: %v\n", err)
-		} else {
-			fmt.Printf("🔑 [SERVER DEBUG] Found %d credentials in database for user %s\n", credCount, user.UserID)
-		}
-
-		// Try to find the specific credential
-		findQuery := `
-			SELECT credential_id
-			FROM passkey_credentials
-			WHERE user_id = $1
-			LIMIT 1
-		`
-		err = db.QueryRow(findQuery, user.UserID).Scan(&foundCredID)
-
-		if err == nil && len(foundCredID) > 0 {
-			fmt.Printf("🔑 [SERVER DEBUG] Found credential in database, ID length: %d bytes\n", len(foundCredID))
-
-			// This is a simplified check - in production you would verify signature
-			credentialExists = true
-		} else if err != nil && err != sql.ErrNoRows {
-			fmt.Printf("❌ [SERVER DEBUG] Database error finding credential: %v\n", err)
-		} else {
-			fmt.Printf("❌ [SERVER DEBUG] No credentials found in database for user: %s\n", user.UserID)
-		}
+// Handle the completion of passkey login
+func handleFinishLogin(c *gin.Context, db *sql.DB) {
+	// Parse request
+	var req struct {
+		Username          string `json:"username"`
+		CredentialID      string `json:"credential_id"`
+		ClientData        string `json:"client_data"`
+		AuthenticatorData string `json:"authenticator_data"`
+		Signature         string `json:"signature"`
+		Challenge         string `json:"challenge"`
+		SessionID         string `json:"session_id"`
 	}
 
-	// If credential verification is successful (or we're accepting any credential for this user)
-	// For demo purposes, we'll accept any authentication attempt for a user with registered passkeys
-	if credentialExists || len(user.Credentials) > 0 {
-		fmt.Printf("✅ [SERVER DEBUG] Credential verification successful for user: %s\n", request.Username)
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
 
-		// Update sign count if we found a matching credential
-		if matchingCredential != nil {
-			matchingCredential.Authenticator.SignCount++
-			// In a real implementation, you would update the sign count in the database here
-		}
+	// Get session ID from cookie or request
+	sessionID, _ := c.Cookie("passkey_session")
+	if sessionID == "" {
+		sessionID = req.SessionID
+	}
 
-		// Get full user for login response
-		var fullUser models.User
-		userQuery := "SELECT id, username, name, password, role, status FROM users WHERE username = $1"
-		err = db.QueryRow(userQuery, request.Username).Scan(
-			&fullUser.ID,
-			&fullUser.Username,
-			&fullUser.Name,
-			&fullUser.Password,
-			&fullUser.Role,
-			&fullUser.Status,
-		)
-		if err != nil {
-			fmt.Printf("❌ [SERVER DEBUG] Failed to fetch user data: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch user data"})
-			return
-		}
+	// Get session data
+	sessionData, ok := sessionStore[sessionID]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
+		return
+	}
+	defer delete(sessionStore, sessionID) // Remove session data when done
 
-		// Fetch additional roles for this user
-		rolesQuery := "SELECT role FROM additional_roles WHERE user_id = $1"
-		rows, err := db.Query(rolesQuery, fullUser.ID)
-		if err != nil {
-			fmt.Printf("❌ [SERVER DEBUG] Failed to fetch additional roles: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch additional roles"})
-			return
-		}
+	// Check if the user exists
+	var userID int
+	var userName, displayName, role string
+	err := db.QueryRow("SELECT id, username, name, role FROM users WHERE username = $1", req.Username).Scan(&userID, &userName, &displayName, &role)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Create a user for WebAuthn
+	user := &PasskeyUser{
+		ID:       userID,
+		Username: userName,
+		Name:     displayName,
+	}
+
+	// Get credentials for the user
+	user.Credentials = getCredentialsForUser(db, userID)
+	if len(user.Credentials) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No passkeys registered for this user"})
+		return
+	}
+
+	// Decode credential ID
+	credentialIDBytes, err := base64.StdEncoding.DecodeString(req.CredentialID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid credential ID"})
+		return
+	}
+
+	// Parse client data - we only need this for the assertion
+	clientDataBytes, err := base64.StdEncoding.DecodeString(req.ClientData)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data"})
+		return
+	}
+
+	// Parse the assertion response
+	parsedResponse, err := protocol.ParseCredentialRequestResponseBody(strings.NewReader(string(clientDataBytes)))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse response: %v", err)})
+		return
+	}
+
+	// Validate the assertion
+	_, err = webAuthnInstance.ValidateLogin(user, *sessionData, parsedResponse)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": fmt.Sprintf("Invalid assertion: %v", err)})
+		return
+	}
+
+	// Get additional roles for the user
+	var additionalRoles []string
+	rows, err := db.Query("SELECT role FROM user_roles WHERE user_id = $1", userID)
+	if err == nil {
 		defer rows.Close()
-
-		// Initialize an empty slice for additional roles
-		fullUser.AdditionalRoles = []string{}
-
-		// Iterate through the rows and collect the roles
 		for rows.Next() {
-			var role string
-			if err := rows.Scan(&role); err != nil {
-				fmt.Printf("❌ [SERVER DEBUG] Failed to process role: %v\n", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process additional roles"})
-				return
+			var additionalRole string
+			if err := rows.Scan(&additionalRole); err == nil {
+				additionalRoles = append(additionalRoles, additionalRole)
 			}
-			fullUser.AdditionalRoles = append(fullUser.AdditionalRoles, role)
 		}
-
-		// Get profile picture URL
-		var filePath sql.NullString
-		var profilePicture string = ""
-		err = db.QueryRow("SELECT file_path FROM profile_pictures WHERE user_id = $1", fullUser.ID).Scan(&filePath)
-		if err == nil && filePath.Valid {
-			profilePicture = fmt.Sprintf("/%s", filePath.String)
-		}
-
-		// Return user data
-		fmt.Println("✅ [SERVER DEBUG] Login successful, returning user data")
-		fmt.Printf("User data: ID=%d, Name=%s, Role=%s, AdditionalRoles=%v\n",
-			fullUser.ID, fullUser.Name, fullUser.Role, fullUser.AdditionalRoles)
-
-		c.JSON(http.StatusOK, gin.H{
-			"id":               fullUser.ID,
-			"username":         fullUser.Username,
-			"name":             fullUser.Name,
-			"role":             fullUser.Role,
-			"status":           fullUser.Status,
-			"additional_roles": fullUser.AdditionalRoles,
-			"profile_picture":  profilePicture,
-			"passkey_verified": true,
-			"success":          true,
-		})
-	} else {
-		fmt.Printf("❌ [SERVER DEBUG] No matching credentials found for user: %s\n", request.Username)
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":   "Authentication failed - no matching credential",
-			"success": false,
-		})
-	}
-}
-
-// hasPasskey checks if a user has a passkey
-func hasPasskey(c *gin.Context, db *sql.DB) {
-	username := c.Param("username")
-	if username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
-		return
 	}
 
-	fmt.Printf("🔑 [SERVER DEBUG] Checking if user has passkey: %s\n", username)
-
-	// Get user for webauthn
-	user, err := models.GetUserForWebAuthn(db, username)
+	// Update sign count in the database
+	_, err = db.Exec("UPDATE passkey_credentials SET sign_count = sign_count + 1 WHERE user_id = $1 AND credential_id = $2", userID, credentialIDBytes)
 	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-	fmt.Printf("🔑 [SERVER DEBUG] User found: ID=%s, Username=%s\n", user.UserID, user.Username)
-
-	// Check if user has any passkeys in loaded credentials
-	if len(user.Credentials) > 0 {
-		fmt.Printf("✅ [SERVER DEBUG] User has %d passkeys in loaded credentials\n", len(user.Credentials))
-		c.JSON(http.StatusOK, gin.H{
-			"has_passkey": true,
-			"count":       len(user.Credentials),
-		})
-		return
+		log.Printf("Failed to update sign count: %v", err)
 	}
 
-	// Double-check directly in the database with a cleaner query
-	var count int
-	countQuery := `SELECT COUNT(*) FROM passkey_credentials WHERE user_id = $1`
-	err = db.QueryRow(countQuery, user.UserID).Scan(&count)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Error counting credentials: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check passkeys"})
-		return
-	}
-
-	fmt.Printf("🔑 [SERVER DEBUG] Found %d credentials in database for user %s\n", count, user.UserID)
-
-	// Use the actual count to determine if user has passkeys
-	hasPasskey := count > 0
-
-	if hasPasskey {
-		fmt.Printf("✅ [SERVER DEBUG] User has passkeys according to database check\n")
-	} else {
-		fmt.Printf("🔑 [SERVER DEBUG] User does not have any passkeys\n")
-	}
-
+	// Successful login
 	c.JSON(http.StatusOK, gin.H{
-		"has_passkey": hasPasskey,
-		"count":       count,
+		"id":               userID,
+		"username":         userName,
+		"name":             displayName,
+		"role":             role,
+		"additional_roles": additionalRoles,
 	})
 }
 
-// deletePasskey deletes a user's passkey
-func deletePasskey(c *gin.Context, db *sql.DB) {
-	// Get username from URL parameter
-	username := c.Param("username")
-	if username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
-		return
-	}
-
-	fmt.Printf("🔑 [SERVER DEBUG] Deleting passkey for user: %s\n", username)
-
-	// Get user for webauthn
-	user, err := models.GetUserForWebAuthn(db, username)
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] User lookup failed: %v\n", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Delete all credentials for this user
-	query := `
-		DELETE FROM passkey_credentials
+// Get passkey credentials for a user from the database
+func getCredentialsForUser(db *sql.DB, userID int) []webauthn.Credential {
+	rows, err := db.Query(`
+		SELECT credential_id, public_key, attestation_type, aaguid, sign_count
+		FROM passkey_credentials
 		WHERE user_id = $1
-	`
-	result, err := db.Exec(query, user.UserID)
+	`, userID)
 	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to delete passkey: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete passkey"})
-		return
+		log.Printf("Error getting credentials: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	credentials := []webauthn.Credential{}
+	for rows.Next() {
+		var credentialID, publicKey, aaguid []byte
+		var attestationType string
+		var signCount int64
+		err := rows.Scan(&credentialID, &publicKey, &attestationType, &aaguid, &signCount)
+		if err != nil {
+			log.Printf("Error scanning credential: %v", err)
+			continue
+		}
+
+		// Create a credential
+		credential := webauthn.Credential{
+			ID:              credentialID,
+			PublicKey:       publicKey,
+			AttestationType: attestationType,
+			Authenticator: webauthn.Authenticator{
+				AAGUID:    aaguid,
+				SignCount: uint32(signCount),
+			},
+		}
+		credentials = append(credentials, credential)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		fmt.Printf("❌ [SERVER DEBUG] Failed to get rows affected: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get operation results"})
-		return
-	}
-
-	fmt.Printf("✅ [SERVER DEBUG] Successfully deleted %d passkey(s) for user: %s\n", rowsAffected, username)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": fmt.Sprintf("Successfully deleted %d passkey(s)", rowsAffected),
-	})
+	return credentials
 }

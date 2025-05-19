@@ -22,9 +22,6 @@ func main() {
 	// Initialize the Gin router.
 	router := gin.Default()
 
-	// Register routes for serving .well-known directory
-	routes.SetupStaticRoutes(router)
-
 	// Connect to your PostgreSQL database.
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		config.DBHost,
@@ -76,7 +73,7 @@ func main() {
 	// Register voting system routes
 	routes.SetupVotingRoutes(apiRouter, db)
 
-	// Register WebAuthn/Passkey routes
+	// Register passkey authentication routes
 	routes.SetupPasskeyRoutes(apiRouter, db)
 
 	// Print local non-loopback IPv4 addresses.
@@ -98,6 +95,4 @@ func main() {
 	if err := router.Run(fmt.Sprintf(":%s", config.ServerPort)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
-
 }
-  
