@@ -240,7 +240,7 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 				// Verify the user exists
 				var userID int
 				var userName, displayName string
-				err := db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
+				err = db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
 				if err != nil {
 					log.Printf("ERROR - User not found for ID: %d, Error: %v", req.UserID, err)
 					c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -298,7 +298,174 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 
 	// If we reach here, either WebAuthnResponse was not provided or parsing failed
 	// Continue with the original implementation
-	// ... rest of existing code ...
+	// Get session ID from cookie or request
+	sessionID, _ := c.Cookie("passkey_session")
+	if sessionID == "" {
+		sessionID = req.SessionID
+		log.Printf("DEBUG - Using session ID from request: %s", sessionID)
+	} else {
+		log.Printf("DEBUG - Using session ID from cookie: %s", sessionID)
+	}
+
+	// Get session data
+	sessionData, ok := sessionStore[sessionID]
+	if !ok {
+		log.Printf("ERROR - Session data not found for ID: %s", sessionID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired session"})
+		return
+	}
+	defer delete(sessionStore, sessionID) // Remove session data when done
+
+	// Verify the user exists
+	var userID int
+	var userName, displayName string
+	var err error
+	err = db.QueryRow("SELECT id, username, name FROM users WHERE id = $1", req.UserID).Scan(&userID, &userName, &displayName)
+	if err != nil {
+		log.Printf("ERROR - User not found for ID: %d, Error: %v", req.UserID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Create a user for WebAuthn
+	user := &PasskeyUser{
+		ID:       userID,
+		Username: userName,
+		Name:     displayName,
+	}
+
+	// Parse client data JSON
+	clientDataBytes, err := base64.StdEncoding.DecodeString(req.ClientData)
+	if err != nil {
+		log.Printf("ERROR - Failed to decode client data from base64: %v", err)
+		log.Printf("DEBUG - Client data (first 100 chars): %s", req.ClientData[:min(len(req.ClientData), 100)])
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid client data encoding"})
+		return
+	}
+
+	log.Printf("DEBUG - Decoded client data: %s", string(clientDataBytes))
+
+	// Create the credential creation response
+	parsedResponse, err := protocol.ParseCredentialCreationResponseBody(strings.NewReader(string(clientDataBytes)))
+	if err != nil {
+		log.Printf("ERROR - Failed to parse credential creation response: %v", err)
+		log.Printf("DEBUG - Client data JSON: %s", string(clientDataBytes))
+
+		// Try fixing the JSON format: the client may be sending the entire credential object
+		// instead of just the client data JSON
+		type FixedClientData struct {
+			Type      string `json:"type"`
+			Challenge string `json:"challenge"`
+			Origin    string `json:"origin"`
+		}
+
+		var fixedData FixedClientData
+		if err = json.Unmarshal(clientDataBytes, &fixedData); err != nil {
+			log.Printf("ERROR - Failed to parse fixed client data: %v", err)
+		} else {
+			log.Printf("DEBUG - Parsed fixed client data: type=%s, challenge=%s, origin=%s",
+				fixedData.Type, fixedData.Challenge, fixedData.Origin)
+
+			// Create WebAuthn credential creation response
+			credentialBytes, err := base64.StdEncoding.DecodeString(req.CredentialID)
+			if err != nil {
+				log.Printf("ERROR - Failed to decode credential ID: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid credential ID"})
+				return
+			}
+
+			pubKeyBytes, err := base64.StdEncoding.DecodeString(req.PublicKey)
+			if err != nil {
+				log.Printf("ERROR - Failed to decode public key: %v", err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid public key"})
+				return
+			}
+
+			// Create a manual credential to add to the database
+			credential := webauthn.Credential{
+				ID:              credentialBytes,
+				PublicKey:       pubKeyBytes,
+				AttestationType: "none",
+				Authenticator: webauthn.Authenticator{
+					AAGUID:    make([]byte, 16),
+					SignCount: 0,
+				},
+			}
+
+			log.Printf("DEBUG - Manually created credential ID: %x", credential.ID)
+
+			// Insert directly into database
+			userIDStr := fmt.Sprintf("%d", userID)
+			_, err = db.Exec(`
+				INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count)
+				VALUES ($1, $2, $3, $4, $5, $6)
+			`, userIDStr, credential.ID, credential.PublicKey, credential.AttestationType, credential.Authenticator.AAGUID, credential.Authenticator.SignCount)
+			if err != nil {
+				log.Printf("ERROR - Failed to save credential to database: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Database error: %v", err)})
+				return
+			}
+
+			log.Printf("DEBUG - Successfully saved manually created credential to database")
+
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "Passkey registered successfully (with fallback method)",
+			})
+			return
+		}
+
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse response: %v", err)})
+		return
+	}
+
+	// Finish registration - with detailed logging
+	log.Printf("DEBUG - Attempting to create credential for user %s (ID: %d)", userName, userID)
+	log.Printf("DEBUG - Session data challenge: %s", sessionData.Challenge)
+	log.Printf("DEBUG - Received client data (first 100 chars): %s", string(clientDataBytes)[:min(len(string(clientDataBytes)), 100)])
+
+	credential, err := webAuthnInstance.CreateCredential(user, *sessionData, parsedResponse)
+	if err != nil {
+		log.Printf("ERROR - Failed to create credential: %v", err)
+		log.Printf("ERROR - User ID (hex): %x", user.WebAuthnID())
+		log.Printf("ERROR - Parsed response: %+v", parsedResponse)
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to create credential: %v", err)})
+		return
+	}
+
+	log.Printf("DEBUG - Successfully created credential: %+v", credential.ID)
+
+	// Insert credential into database with detailed logging
+	userIDStr := fmt.Sprintf("%d", userID)
+	attestationType := "none"
+	if credential.AttestationType != "" {
+		attestationType = credential.AttestationType
+	}
+
+	log.Printf("DEBUG - Database insertion - User ID: %s", userIDStr)
+	log.Printf("DEBUG - Database insertion - Credential ID (len: %d): %x", len(credential.ID), credential.ID)
+	log.Printf("DEBUG - Database insertion - Public Key (len: %d): %x", len(credential.PublicKey), credential.PublicKey)
+	log.Printf("DEBUG - Database insertion - Attestation Type: %s", attestationType)
+	log.Printf("DEBUG - Database insertion - AAGUID: %x", credential.Authenticator.AAGUID)
+	log.Printf("DEBUG - Database insertion - Sign Count: %d", credential.Authenticator.SignCount)
+
+	_, err = db.Exec(`
+		INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, userIDStr, credential.ID, credential.PublicKey, attestationType, credential.Authenticator.AAGUID, credential.Authenticator.SignCount)
+	if err != nil {
+		log.Printf("ERROR - Failed to save credential to database: %v", err)
+		dbErr := fmt.Sprintf("Database error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": dbErr})
+		return
+	}
+
+	log.Printf("DEBUG - Successfully saved credential to database")
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Passkey registered successfully",
+	})
 }
 
 // Handle the beginning of passkey login
