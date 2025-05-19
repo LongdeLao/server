@@ -14,6 +14,14 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
+// Helper function for string truncation
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 const (
 	// Domain for the WebAuthn relying party
 	rpDomain = "connect.hsannu.com"
@@ -228,28 +236,48 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Finish registration
+	// Finish registration - with detailed logging
+	log.Printf("DEBUG - Attempting to create credential for user %s (ID: %d)", userName, userID)
+	log.Printf("DEBUG - Session data challenge: %s", sessionData.Challenge)
+	log.Printf("DEBUG - Received client data (first 100 chars): %s", string(clientDataBytes)[:min(len(string(clientDataBytes)), 100)])
+
 	credential, err := webAuthnInstance.CreateCredential(user, *sessionData, parsedResponse)
 	if err != nil {
+		log.Printf("ERROR - Failed to create credential: %v", err)
+		log.Printf("ERROR - User ID (hex): %x", user.WebAuthnID())
+		log.Printf("ERROR - Parsed response: %+v", parsedResponse)
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to create credential: %v", err)})
 		return
 	}
 
-	// Insert credential into database
+	log.Printf("DEBUG - Successfully created credential: %+v", credential.ID)
+
+	// Insert credential into database with detailed logging
 	userIDStr := fmt.Sprintf("%d", userID)
 	attestationType := "none"
 	if credential.AttestationType != "" {
 		attestationType = credential.AttestationType
 	}
 
+	log.Printf("DEBUG - Database insertion - User ID: %s", userIDStr)
+	log.Printf("DEBUG - Database insertion - Credential ID (len: %d): %x", len(credential.ID), credential.ID)
+	log.Printf("DEBUG - Database insertion - Public Key (len: %d): %x", len(credential.PublicKey), credential.PublicKey)
+	log.Printf("DEBUG - Database insertion - Attestation Type: %s", attestationType)
+	log.Printf("DEBUG - Database insertion - AAGUID: %x", credential.Authenticator.AAGUID)
+	log.Printf("DEBUG - Database insertion - Sign Count: %d", credential.Authenticator.SignCount)
+
 	_, err = db.Exec(`
 		INSERT INTO passkey_credentials (user_id, credential_id, public_key, attestation_type, aaguid, sign_count)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, userIDStr, credential.ID, credential.PublicKey, attestationType, credential.Authenticator.AAGUID, credential.Authenticator.SignCount)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save credential: %v", err)})
+		log.Printf("ERROR - Failed to save credential to database: %v", err)
+		dbErr := fmt.Sprintf("Database error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": dbErr})
 		return
 	}
+
+	log.Printf("DEBUG - Successfully saved credential to database")
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
