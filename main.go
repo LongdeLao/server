@@ -1,17 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"database/sql"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
-	"os"
 	"server/config"        // Your configuration package.
 	"server/notifications" // Import the notifications package
 	"server/routes"        // Adjust the import path based on your module.
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,9 +18,6 @@ import (
 func main() {
 	// Initialize random number generator
 	rand.Seed(time.Now().UnixNano())
-
-	// Prompt for APNs environment
-	promptAPNSEnvironment()
 
 	// Initialize the Gin router.
 	router := gin.Default()
@@ -100,36 +94,5 @@ func main() {
 	log.Printf("IS IT RUNNING?")
 	if err := router.Run(fmt.Sprintf(":%s", config.ServerPort)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
-	}
-}
-
-// promptAPNSEnvironment asks the user to select between development and production APNS environment
-func promptAPNSEnvironment() {
-	fmt.Println("=== APNS Environment Selection ===")
-	fmt.Println("Please select APNS environment:")
-	fmt.Println("[d] Development (default)")
-	fmt.Println("[p] Production")
-	fmt.Print("Enter your choice (d/p): ")
-
-	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		log.Printf("Error reading input, using default (development): %v", err)
-		return
-	}
-
-	// Trim whitespace and convert to lowercase
-	input = strings.TrimSpace(strings.ToLower(input))
-
-	switch input {
-	case "p":
-		config.APNSEnvironment = "production"
-		fmt.Println("Selected APNS environment: PRODUCTION")
-	case "d", "":
-		config.APNSEnvironment = "development"
-		fmt.Println("Selected APNS environment: DEVELOPMENT")
-	default:
-		fmt.Println("Invalid choice, using default (development)")
-		config.APNSEnvironment = "development"
 	}
 }

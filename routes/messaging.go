@@ -1099,24 +1099,7 @@ func sendPushNotifications(db *sql.DB, conversationID int, senderID int, senderN
 		// Send the notification
 		err := notifications.SendMessageNotification(deviceID, conversationID, senderName, messagePreview)
 		if err != nil {
-			// Check if this is an invalid token error
-			if strings.HasPrefix(err.Error(), "INVALID_TOKEN:") {
-				// Extract the token from the error message
-				parts := strings.Split(err.Error(), ":")
-				if len(parts) >= 2 {
-					invalidToken := parts[1]
-					// Invalidate the token in the database
-					invalidateErr := notifications.InvalidateDeviceToken(db, invalidToken)
-					if invalidateErr != nil {
-						fmt.Printf("Error invalidating device token for user %d: %v\n", userID, invalidateErr)
-					} else {
-						fmt.Printf("Successfully invalidated device token for user %d\n", userID)
-					}
-				}
-				fmt.Printf("Removed invalid device token for user %d\n", userID)
-			} else {
-				fmt.Printf("Error sending notification to user %d: %v\n", userID, err)
-			}
+			fmt.Printf("Error sending notification to user %d: %v\n", userID, err)
 		} else {
 			fmt.Printf("Successfully sent notification to user %d\n", userID)
 		}
