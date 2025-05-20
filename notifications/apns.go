@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -99,6 +100,11 @@ func SendMessageNotification(deviceToken string, conversationID int, senderName 
 	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
 
 	if res.StatusCode != 200 {
+		// Special handling for BadDeviceToken errors - we'll create a custom error type for this
+		if res.Reason == apns2.ReasonBadDeviceToken || res.Reason == apns2.ReasonUnregistered {
+			// Return a special error that can be handled by the caller
+			return fmt.Errorf("INVALID_TOKEN:%s:%s", deviceToken, res.Reason)
+		}
 		return fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
 	}
 
@@ -498,4 +504,26 @@ func generateToken() (string, error) {
 	authToken := tokenGenerator.GenerateIfExpired()
 
 	return authToken, nil
+}
+
+// InvalidateDeviceToken clears the device token from the database for the given device token
+// This should be called when APNs reports a token as invalid (BadDeviceToken)
+func InvalidateDeviceToken(db *sql.DB, deviceToken string) error {
+	if deviceToken == "" {
+		return fmt.Errorf("empty device token")
+	}
+
+	query := `UPDATE users SET device_id = NULL WHERE device_id = $1`
+	result, err := db.Exec(query, deviceToken)
+	if err != nil {
+		return fmt.Errorf("error invalidating device token: %v", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error getting rows affected: %v", err)
+	}
+
+	log.Printf("Invalidated device token: %s - %d user(s) affected", deviceToken, rowsAffected)
+	return nil
 }
