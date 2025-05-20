@@ -9,13 +9,15 @@ import (
 
 // StudentProfile represents a comprehensive profile of a student
 type StudentProfile struct {
-	ID           int         `json:"id"`
-	FirstName    string      `json:"first_name"`
-	LastName     string      `json:"last_name"`
-	FullName     string      `json:"full_name"`
+	ID            int        `json:"id"`
+	FirstName     string     `json:"first_name"`
+	LastName      string     `json:"last_name"`
+	FullName      string     `json:"full_name"`
 	FormalPicture string     `json:"formal_picture"`
-	Classes      []Subject   `json:"classes"`
-	Attendance   Attendance  `json:"attendance"`
+	YearGroup     string     `json:"year_group"`
+	GroupName     string     `json:"group_name"`
+	Classes       []Subject  `json:"classes"`
+	Attendance    Attendance `json:"attendance"`
 }
 
 // Attendance represents attendance statistics for a student
@@ -87,10 +89,12 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 // getStudents retrieves all users with role 'student'
 func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 	query := `
-		SELECT id, first_name, last_name, name, formal_picture
-		FROM users
-		WHERE role = 'student'
-		ORDER BY last_name, first_name
+		SELECT u.id, u.first_name, u.last_name, u.name, u.formal_picture, 
+		       COALESCE(a.year, '') AS year_group, COALESCE(a.group_name, '') AS group_name
+		FROM users u
+		LEFT JOIN attendance a ON u.id = a.user_id
+		WHERE u.role = 'student'
+		ORDER BY a.year, a.group_name, u.last_name, u.first_name
 	`
 
 	rows, err := db.Query(query)
@@ -102,11 +106,23 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 	var students []map[string]interface{}
 	for rows.Next() {
 		var id int
-		var firstName, lastName, name, formalPicture sql.NullString
+		var firstName, lastName, name, formalPicture, yearGroup, groupName sql.NullString
 		
-		err := rows.Scan(&id, &firstName, &lastName, &name, &formalPicture)
+		err := rows.Scan(&id, &firstName, &lastName, &name, &formalPicture, &yearGroup, &groupName)
 		if err != nil {
 			return nil, err
+		}
+
+		// Combine year and group for display
+		var displayYearGroup string
+		year := getStringValue(yearGroup)
+		group := getStringValue(groupName)
+		
+		if year != "" {
+			displayYearGroup = year
+			if group != "" {
+				displayYearGroup += " " + group
+			}
 		}
 
 		student := map[string]interface{}{
@@ -115,6 +131,7 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 			"last_name":      getStringValue(lastName),
 			"name":           getStringValue(name),
 			"formal_picture": getStringValue(formalPicture),
+			"year_group":     displayYearGroup,
 		}
 
 		students = append(students, student)
@@ -170,12 +187,12 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 	
 	// Get student attendance
 	attendanceQuery := `
-		SELECT present, absent, late, medical, early, today
+		SELECT present, absent, late, medical, early, today, year, group_name
 		FROM attendance
 		WHERE user_id = $1
 	`
 	
-	var today sql.NullString
+	var today, year, groupName sql.NullString
 	err = db.QueryRow(attendanceQuery, studentID).Scan(
 		&student.Attendance.Present,
 		&student.Attendance.Absent,
@@ -183,10 +200,14 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 		&student.Attendance.Medical,
 		&student.Attendance.Early,
 		&today,
+		&year,
+		&groupName,
 	)
 	
 	if err == nil {
 		student.Attendance.Today = getStringValue(today)
+		student.YearGroup = getStringValue(year)
+		student.GroupName = getStringValue(groupName)
 	}
 	
 	// Get student classes (subjects)
