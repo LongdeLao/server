@@ -3,7 +3,6 @@ package routes
 import (
 	"database/sql"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
