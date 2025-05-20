@@ -13,6 +13,7 @@ type User struct {
 	Role            string   `json:"role"`
 	AdditionalRoles []string `json:"additional_roles"` // New field to hold additional roles
 	ProfilePicture  string   `json:"profile_picture"`  // URL or path to the user's profile picture
+	FormalPicture   string   `json:"formal_picture"`   // URL or path to the user's formal picture
 	Email           string   `json:"email"`            // User's email address
 	FirstName       string   `json:"first_name"`
 	LastName        string   `json:"last_name"`
@@ -24,7 +25,7 @@ type User struct {
 func GetAllUsers(db *sql.DB) ([]User, error) {
 	query := `
 		SELECT id, first_name, last_name, name, username, 
-		       password, role, device_id, email, status
+		       password, role, device_id, email, status, formal_picture
 		FROM users
 		ORDER BY id
 	`
@@ -38,6 +39,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var user User
+		var formalPicture sql.NullString
 		err := rows.Scan(
 			&user.ID,
 			&user.FirstName,
@@ -49,6 +51,7 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 			&user.DeviceID,
 			&user.Email,
 			&user.Status,
+			&formalPicture,
 		)
 		if err != nil {
 			return nil, err
@@ -56,6 +59,13 @@ func GetAllUsers(db *sql.DB) ([]User, error) {
 
 		// For security, clear the password before sending to client
 		user.Password = ""
+		
+		// Handle NULL formal picture
+		if formalPicture.Valid {
+			user.FormalPicture = formalPicture.String
+		} else {
+			user.FormalPicture = ""
+		}
 
 		users = append(users, user)
 	}
@@ -78,9 +88,10 @@ func UserExistsByEmail(db *sql.DB, email string) (bool, error) {
 // GetUserByEmail retrieves a user by their email address
 func GetUserByEmail(db *sql.DB, email string) (*User, error) {
 	var user User
+	var formalPicture sql.NullString
 	query := `
 		SELECT id, first_name, last_name, name, username, 
-		       password, role, device_id, email, status
+		       password, role, device_id, email, status, formal_picture
 		FROM users
 		WHERE email = $1
 	`
@@ -95,9 +106,17 @@ func GetUserByEmail(db *sql.DB, email string) (*User, error) {
 		&user.DeviceID,
 		&user.Email,
 		&user.Status,
+		&formalPicture,
 	)
 	if err != nil {
 		return nil, err
+	}
+
+	// Handle NULL formal picture
+	if formalPicture.Valid {
+		user.FormalPicture = formalPicture.String
+	} else {
+		user.FormalPicture = ""
 	}
 
 	return &user, nil

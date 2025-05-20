@@ -45,10 +45,12 @@ func main() {
 	// Set up static file serving for images
 	router.Static("/images", "./images")
 	router.Static("/profile_pictures", "./profile_pictures")
+	router.Static("/formal_pictures", "./formal_pictures")
 
 	// Also serve static files under /api prefix to maintain compatibility
 	router.Static("/api/profile_pictures", "./profile_pictures")
 	router.Static("/api/images", "./images")
+	router.Static("/api/formal_pictures", "./formal_pictures")
 
 	// Create an API router group
 	apiRouter := router.Group("/api")
@@ -75,6 +77,9 @@ func main() {
 
 	// Register passkey authentication routes
 	routes.SetupPasskeyRoutes(apiRouter, db)
+
+	// Register student routes
+	routes.SetupStudentRoutes(apiRouter, db)
 
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
