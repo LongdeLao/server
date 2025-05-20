@@ -44,7 +44,7 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 	query := `
 		SELECT EXISTS(
 			SELECT 1 FROM additional_roles 
-			WHERE user_id = $1 AND name = 'attendance'
+			WHERE user_id = $1 AND role = 'attendance'
 		)
 	`
 	
