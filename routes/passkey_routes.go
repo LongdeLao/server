@@ -329,15 +329,18 @@ func handleFinishRegistration(c *gin.Context, db *sql.DB) {
 					"success": true,
 					"message": "Passkey registered successfully",
 				})
-				return
+				return // Successfully processed WebAuthnResponse, exit here.
 			} else {
 				log.Printf("ERROR - Failed to parse WebAuthn response with protocol.ParseCredentialCreationResponseBody: %v. Raw JSON was: %s", err, string(webAuthnJSON))
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid WebAuthn response format: %v", err)})
+				return // Exit here if parsing WebAuthnResponse fails, do not fall through.
 			}
 		}
 	}
 
-	// If we reach here, either WebAuthnResponse was not provided or parsing failed
-	log.Printf("DEBUG - Proceeding with fallback registration logic or WebAuthnResponse parsing failed.")
+	// If we reach here, either WebAuthnResponse was not provided, or marshalling it failed, or initial parsing failed and we explicitly decided to fall back.
+	// For now, this path means the new WebAuthnResponse flow was not completed successfully.
+	log.Printf("DEBUG - Proceeding with fallback registration logic because WebAuthnResponse was not present or its processing did not complete.")
 
 	// Get session ID from cookie or request
 	sessionID, _ := c.Cookie("passkey_session")
