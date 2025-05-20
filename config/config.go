@@ -17,6 +17,9 @@ const (
 	APNSTopic   = "com.leo.hsannu"
 )
 
+// APNSEnvironment is set at runtime (development or production)
+var APNSEnvironment = "development"
+
 // SMTP Email configuration
 const (
 	SMTPHost     = "smtp.hostinger.com"
