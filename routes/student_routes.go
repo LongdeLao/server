@@ -2,6 +2,7 @@ package routes
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -88,17 +89,37 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 
 // getStudents retrieves all users with role 'student'
 func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
+	// Debug: let's examine the structure of the attendance table
+	debugQuery := `
+		SELECT column_name, data_type 
+		FROM information_schema.columns 
+		WHERE table_name = 'attendance'
+	`
+	debugRows, err := db.Query(debugQuery)
+	if err == nil {
+		defer debugRows.Close()
+		fmt.Println("Attendance table structure:")
+		for debugRows.Next() {
+			var columnName, dataType string
+			if err := debugRows.Scan(&columnName, &dataType); err == nil {
+				fmt.Printf("  Column: %s, Type: %s\n", columnName, dataType)
+			}
+		}
+	}
+
+	// Simplified query to just join with attendance table
 	query := `
 		SELECT u.id, u.first_name, u.last_name, u.name, u.formal_picture, 
-		       COALESCE(a.year, '') AS year_group, COALESCE(a.group_name, '') AS group_name
+		       a.year, a.group_name
 		FROM users u
 		LEFT JOIN attendance a ON u.id = a.user_id
 		WHERE u.role = 'student'
-		ORDER BY a.year, a.group_name, u.last_name, u.first_name
+		ORDER BY u.last_name, u.first_name
 	`
 
 	rows, err := db.Query(query)
 	if err != nil {
+		fmt.Println("Error in student query:", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -106,22 +127,28 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 	var students []map[string]interface{}
 	for rows.Next() {
 		var id int
-		var firstName, lastName, name, formalPicture, yearGroup, groupName sql.NullString
+		var firstName, lastName, name, formalPicture sql.NullString
+		var year, groupName sql.NullString
 		
-		err := rows.Scan(&id, &firstName, &lastName, &name, &formalPicture, &yearGroup, &groupName)
+		err := rows.Scan(&id, &firstName, &lastName, &name, &formalPicture, &year, &groupName)
 		if err != nil {
+			fmt.Println("Error scanning student row:", err)
 			return nil, err
 		}
 
+		// Debug: Print student year group info
+		fmt.Printf("Student %d - Year: %v, Group: %v\n", 
+			id, getStringValue(year), getStringValue(groupName))
+
 		// Combine year and group for display
 		var displayYearGroup string
-		year := getStringValue(yearGroup)
-		group := getStringValue(groupName)
+		yearStr := getStringValue(year)
+		groupStr := getStringValue(groupName)
 		
-		if year != "" {
-			displayYearGroup = year
-			if group != "" {
-				displayYearGroup += " " + group
+		if yearStr != "" {
+			displayYearGroup = yearStr
+			if groupStr != "" {
+				displayYearGroup += " " + groupStr
 			}
 		}
 
@@ -138,6 +165,7 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 	}
 
 	if err = rows.Err(); err != nil {
+		fmt.Println("Error after scanning all rows:", err)
 		return nil, err
 	}
 
