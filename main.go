@@ -65,11 +65,13 @@ func main() {
 	router.Static("/images", "./images")
 	router.Static("/profile_pictures", "./profile_pictures")
 	router.Static("/document-files", "./documents")
+	router.Static("/student_formal_images", "./student_formal_images") // Add student formal images
 
 	// Also serve static files under /api prefix to maintain compatibility
 	router.Static("/api/profile_pictures", "./profile_pictures")
 	router.Static("/api/images", "./images")
 	router.Static("/api/document-files", "./documents")
+	router.Static("/api/student_formal_images", "./student_formal_images") // Add student formal images under API prefix
 
 	// Create an API router group
 	apiRouter := router.Group("/api")
