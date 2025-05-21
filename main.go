@@ -9,11 +9,27 @@ import (
 	"server/config"        // Your configuration package.
 	"server/notifications" // Import the notifications package
 	"server/routes"        // Adjust the import path based on your module.
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq" // PostgreSQL driver.
 )
+
+// CacheMiddleware adds Cache-Control headers for static assets
+func CacheMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/images/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/profile_pictures/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/images/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/profile_pictures/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/document-files/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/document-files/") {
+			c.Header("Cache-Control", "public, max-age=86400") // Cache for 1 day (86400 seconds)
+		}
+		c.Next()
+	}
+}
 
 func main() {
 	// Initialize random number generator
@@ -21,6 +37,9 @@ func main() {
 
 	// Initialize the Gin router.
 	router := gin.Default()
+
+	// Apply caching middleware globally or to specific routes
+	router.Use(CacheMiddleware())
 
 	// Connect to your PostgreSQL database.
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
@@ -45,10 +64,12 @@ func main() {
 	// Set up static file serving for images
 	router.Static("/images", "./images")
 	router.Static("/profile_pictures", "./profile_pictures")
+	router.Static("/document-files", "./documents")
 
 	// Also serve static files under /api prefix to maintain compatibility
 	router.Static("/api/profile_pictures", "./profile_pictures")
 	router.Static("/api/images", "./images")
+	router.Static("/api/document-files", "./documents")
 
 	// Create an API router group
 	apiRouter := router.Group("/api")
@@ -75,9 +96,12 @@ func main() {
 
 	// Register passkey authentication routes
 	routes.SetupPasskeyRoutes(apiRouter, db)
-	
+
 	// Register student routes
 	routes.SetupStudentRoutes(apiRouter, db)
+
+	// Register document hub routes
+	routes.SetupDocumentRoutes(apiRouter, db)
 
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
