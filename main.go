@@ -34,6 +34,9 @@ func CacheMiddleware() gin.HandlerFunc {
 }
 
 func main() {
+	// Set Gin to production mode
+	gin.SetMode(gin.ReleaseMode)
+
 	// Initialize random number generator
 	rand.Seed(time.Now().UnixNano())
 
