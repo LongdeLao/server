@@ -24,7 +24,9 @@ func CacheMiddleware() gin.HandlerFunc {
 			strings.HasPrefix(c.Request.URL.Path, "/api/images/") ||
 			strings.HasPrefix(c.Request.URL.Path, "/api/profile_pictures/") ||
 			strings.HasPrefix(c.Request.URL.Path, "/document-files/") ||
-			strings.HasPrefix(c.Request.URL.Path, "/api/document-files/") {
+			strings.HasPrefix(c.Request.URL.Path, "/api/document-files/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/student_formal_images/") ||
+			strings.HasPrefix(c.Request.URL.Path, "/api/student_formal_images/") {
 			c.Header("Cache-Control", "public, max-age=86400") // Cache for 1 day (86400 seconds)
 		}
 		c.Next()
