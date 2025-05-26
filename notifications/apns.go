@@ -45,7 +45,7 @@ func InitAPNS() error {
 		TeamID:  config.TeamID,
 	}
 
-	// Initialize the client - CRITICAL: Explicitly use Development environment
+	// Initialize the client for APNs Production environment
 	client = apns2.NewTokenClient(token).Production()
 
 	// Log which environment we're using
@@ -408,7 +408,7 @@ func SendAPNsNotificationExact(deviceToken string, activityId string, status str
 		log.Printf("✅ Payload saved to payload.json for verification")
 	}
 
-	// APNS development URL - EXACTLY as in the shell script
+	// APNS production URL - EXACTLY as in the shell script
 	url := fmt.Sprintf("https://api.push.apple.com/3/device/%s", deviceToken)
 
 	// Bundle ID with push-type.liveactivity suffix
