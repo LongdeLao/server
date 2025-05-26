@@ -46,7 +46,7 @@ func InitAPNS() error {
 	}
 
 	// Initialize the client - CRITICAL: Explicitly use Development environment
-	client = apns2.NewTokenClient(token).Development()
+	client = apns2.NewTokenClient(token).Production()
 
 	// Log which environment we're using
 	log.Println("✅ APNs client initialized in DEVELOPMENT mode")
@@ -424,7 +424,7 @@ func SendAPNsNotificationExact(deviceToken string, activityId string, status str
 	req.Header.Set("apns-push-type", "liveactivity")
 	req.Header.Set("apns-priority", "10")
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("apns-development", "true")
+	req.Header.Set("apns-development", "false")
 
 	// Log the request details
 	log.Printf("🚀 SENDING APNs REQUEST:")
