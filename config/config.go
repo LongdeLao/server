@@ -28,3 +28,13 @@ const (
 
 // Server configuration
 const ServerPort = "2000"
+
+// AI Assistant configuration
+const (
+	AIAPIKey          = "sk-96744d1c86d149dcb3f906b8fcbcd210"
+	AIBaseURL         = "https://api.deepseek.com/chat/completions"
+	AIMaxInputTokens  = 4000
+	AIMaxOutputTokens = 2000
+	AITemperature     = 0.7
+	AITopP            = 0.9
+)

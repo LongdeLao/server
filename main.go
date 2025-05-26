@@ -110,6 +110,9 @@ func main() {
 	// Register document hub routes
 	routes.SetupDocumentRoutes(apiRouter, db)
 
+	// Register AI configuration routes
+	routes.RegisterAIConfigRoutes(apiRouter)
+
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
