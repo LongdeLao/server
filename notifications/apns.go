@@ -49,7 +49,7 @@ func InitAPNS() error {
 	client = apns2.NewTokenClient(token).Production()
 
 	// Log which environment we're using
-	log.Println("✅ APNs client initialized in DEVELOPMENT mode")
+	log.Println("✅ APNs client initialized in PRODUCTION mode")
 
 	initialized = true
 	return nil
@@ -268,7 +268,9 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 		notification.CollapseID = ""          // No collapse ID for live activities
 	}
 
-	// Client is already initialized in development mode during InitAPNS()
+	// Always set development flag explicitly (matching shell script)
+	// This is redundant with client.Development() but ensures we match exactly
+	// client.Development() // Removed: This was forcing development mode
 
 	// Send the notification
 	res, err := client.Push(notification)
@@ -424,7 +426,7 @@ func SendAPNsNotificationExact(deviceToken string, activityId string, status str
 	req.Header.Set("apns-push-type", "liveactivity")
 	req.Header.Set("apns-priority", "10")
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("apns-development", "false")
+	// req.Header.Set("apns-development", "true") // Removed: Not needed for production and APNs infers from cert/token usually
 
 	// Log the request details
 	log.Printf("🚀 SENDING APNs REQUEST:")
