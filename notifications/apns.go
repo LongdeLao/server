@@ -46,7 +46,7 @@ func InitAPNS() error {
 	}
 
 	// Initialize the client - CRITICAL: Explicitly use Development environment
-	client = apns2.NewTokenClient(token).Development()
+	client = apns2.NewTokenClient(token).Production()
 
 	// Log which environment we're using
 	log.Println("✅ APNs client initialized in DEVELOPMENT mode")
