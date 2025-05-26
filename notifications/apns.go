@@ -46,7 +46,7 @@ func InitAPNS() error {
 	}
 
 	// Initialize the client - CRITICAL: Explicitly use Development environment
-	client = apns2.NewTokenClient(token).Production()
+	client = apns2.NewTokenClient(token).Development()
 
 	// Log which environment we're using
 	log.Println("✅ APNs client initialized in DEVELOPMENT mode")
@@ -268,9 +268,7 @@ func SendAPNsNotification(deviceToken string, topic string, jsonPayload string, 
 		notification.CollapseID = ""          // No collapse ID for live activities
 	}
 
-	// Always set development flag explicitly (matching shell script)
-	// This is redundant with client.Development() but ensures we match exactly
-	client.Development()
+	// Client is already initialized in development mode during InitAPNS()
 
 	// Send the notification
 	res, err := client.Push(notification)
@@ -409,7 +407,7 @@ func SendAPNsNotificationExact(deviceToken string, activityId string, status str
 	}
 
 	// APNS development URL - EXACTLY as in the shell script
-	url := fmt.Sprintf("https://api.development.push.apple.com/3/device/%s", deviceToken)
+	url := fmt.Sprintf("https://api.push.apple.com/3/device/%s", deviceToken)
 
 	// Bundle ID with push-type.liveactivity suffix
 	bundleID := "com.leo.hsannu.push-type.liveactivity"
