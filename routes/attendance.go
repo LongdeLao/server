@@ -245,18 +245,11 @@ func GetStudentsByYearGroup(c *gin.Context, db *sql.DB) {
 	}
 
 	// Query the database for students in this year group
-	// We'll also join with attendance_history to get arrived_at times for late students
-	query := `
-		SELECT a.user_id, a.name, a.year, a.group_name, a.today, a.present, a.absent, a.late, a.medical, a.early,
-		       ah.arrived_at
-		FROM attendance a
-		LEFT JOIN attendance_history ah ON a.user_id = ah.student_id 
-		    AND ah.attendance_date = CURRENT_DATE 
-		    AND ah.status = 'late'
-		WHERE a.year = $1 AND a.group_name = $2
-	`
-
-	rows, err := db.Query(query, yearGroup.Year, yearGroup.Section)
+	rows, err := db.Query(`
+		SELECT user_id, name, year, group_name, today, present, absent, late, medical, early 
+		FROM attendance 
+		WHERE year = $1 AND group_name = $2
+	`, yearGroup.Year, yearGroup.Section)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -268,25 +261,20 @@ func GetStudentsByYearGroup(c *gin.Context, db *sql.DB) {
 	defer rows.Close()
 
 	// Parse the query results
-	var students []gin.H
+	var students []models.Student
 	for rows.Next() {
-		var userID int
-		var name, year, groupName, today string
-		var present, absent, late, medical, early int
-		var arrivedAt sql.NullString
-
+		var student models.Student
 		if err := rows.Scan(
-			&userID,
-			&name,
-			&year,
-			&groupName,
-			&today,
-			&present,
-			&absent,
-			&late,
-			&medical,
-			&early,
-			&arrivedAt,
+			&student.UserID,
+			&student.Name,
+			&student.Year,
+			&student.GroupName,
+			&student.Today,
+			&student.Present,
+			&student.Absent,
+			&student.Late,
+			&student.Medical,
+			&student.Early,
 		); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"success": false,
@@ -294,25 +282,6 @@ func GetStudentsByYearGroup(c *gin.Context, db *sql.DB) {
 			})
 			return
 		}
-
-		student := gin.H{
-			"user_id":    userID,
-			"name":       name,
-			"year":       year,
-			"group_name": groupName,
-			"today":      today,
-			"present":    present,
-			"absent":     absent,
-			"late":       late,
-			"medical":    medical,
-			"early":      early,
-		}
-
-		// Only include arrived_at if the student is marked as late
-		if strings.ToLower(today) == "late" && arrivedAt.Valid {
-			student["arrived_at"] = arrivedAt.String
-		}
-
 		students = append(students, student)
 	}
 
@@ -519,14 +488,15 @@ func validateAndNormalizeStatus(status string) (bool, string, string) {
 	// Convert to uppercase for validation
 	upperStatus := strings.ToUpper(status)
 
-	// Check if it's a valid status
+	// Check if it's a valid status or the special Late_Arrived status
 	isValid := upperStatus == "" ||
 		upperStatus == "PRESENT" ||
 		upperStatus == "ABSENT" ||
 		upperStatus == "LATE" ||
 		upperStatus == "MEDICAL" ||
 		upperStatus == "EARLY" ||
-		upperStatus == "PENDING"
+		upperStatus == "PENDING" ||
+		upperStatus == "LATE_ARRIVED" // Added special status
 
 	// Get properly cased status for the attendance table
 	var properCaseStatus string
@@ -535,7 +505,7 @@ func validateAndNormalizeStatus(status string) (bool, string, string) {
 		properCaseStatus = "Present"
 	case "ABSENT":
 		properCaseStatus = "Absent"
-	case "LATE":
+	case "LATE", "LATE_ARRIVED": // Both are saved as "Late" in the attendance table
 		properCaseStatus = "Late"
 	case "MEDICAL":
 		properCaseStatus = "Medical"
@@ -554,7 +524,7 @@ func validateAndNormalizeStatus(status string) (bool, string, string) {
 		lowerCaseStatus = "present"
 	case "ABSENT":
 		lowerCaseStatus = "absent"
-	case "LATE":
+	case "LATE", "LATE_ARRIVED": // Both are saved as "late" in the attendance_history table
 		lowerCaseStatus = "late"
 	case "MEDICAL":
 		lowerCaseStatus = "medical"
@@ -714,12 +684,19 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 
 		// Only insert into attendance_history if status is not empty or "Pending"
 		if lowerCaseStatus != "" && lowerCaseStatus != "pending" {
-			// For late students, we need to set the arrived_at time in UTC
+			// For late students, we need to set the arrived_at time in UTC only if explicitly marked as arrived
 			var arrivedAt interface{}
-			if lowerCaseStatus == "late" {
+
+			// Check if this is a special Late_Arrived status (manually marked as arrived)
+			isLateArrived := strings.ToUpper(student.Status) == "LATE_ARRIVED"
+
+			if lowerCaseStatus == "late" && isLateArrived {
+				// Only set arrived_at time for Late_Arrived status (manual marking)
 				arrivedAt = time.Now().UTC().Format("15:04:05") // Current UTC time in HH:MM:SS format
+				fmt.Printf("Setting arrival time for user ID %d to %v\n", student.UserID, arrivedAt)
 			} else {
-				arrivedAt = nil // NULL for non-late status
+				// For all other statuses, including regular "late" status (auto-marking at 7:40), leave as NULL
+				arrivedAt = nil
 			}
 
 			// Check if an entry already exists for this student on this date
@@ -1152,145 +1129,6 @@ func GetAllAttendance(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// MarkStudentArrived marks a late student as arrived by setting the arrived_at timestamp
-//
-// Endpoint: POST /api/attendance/mark-arrived
-//
-// Request Body:
-//
-//	{
-//	  "yearGroupId": string,  // e.g., "pib-a"
-//	  "studentId": int,       // The user ID of the student
-//	  "date": string          // YYYY-MM-DD format
-//	}
-//
-// Returns:
-//   - 200 OK: Successfully marked student as arrived
-//     {
-//     "success": true,
-//     "message": "Student marked as arrived successfully",
-//     "arrived_at": string    // HH:MM:SS timestamp when the student arrived
-//     }
-//   - 400 Bad Request: Invalid request format or student not marked as late
-//   - 500 Internal Server Error: Database error
-func MarkStudentArrived(c *gin.Context, db *sql.DB) {
-	var request struct {
-		YearGroupID string `json:"yearGroupId"`
-		StudentID   int    `json:"studentId"`
-		Date        string `json:"date"`
-	}
-
-	// Read the raw body first for debugging
-	bodyBytes, err := c.GetRawData()
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Error reading request body: %v", err),
-		})
-		return
-	}
-
-	// Log the raw request body
-	fmt.Printf("Raw mark-arrived request body: %s\n", string(bodyBytes))
-
-	// Create a new reader from the body bytes
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	// Try to bind the JSON
-	if err := c.ShouldBindJSON(&request); err != nil {
-		fmt.Printf("Error binding JSON for mark-arrived: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Invalid request format: %v", err),
-		})
-		return
-	}
-
-	// Validate the request
-	if request.StudentID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid student ID",
-		})
-		return
-	}
-
-	// Parse the attendance date from the request or use today's date
-	attendanceDate := time.Now().UTC()
-	if request.Date != "" {
-		parsedDate, err := time.Parse("2006-01-02", request.Date)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": fmt.Sprintf("Invalid date format: %v", err),
-			})
-			return
-		}
-		attendanceDate = parsedDate
-	}
-
-	// First, verify that the student is marked as late in the attendance_history table
-	var status string
-	var historyID int
-	err = db.QueryRow(`
-		SELECT id, status FROM attendance_history 
-		WHERE student_id = $1 AND attendance_date = $2
-	`, request.StudentID, attendanceDate.Format("2006-01-02")).Scan(&historyID, &status)
-
-	if err != nil {
-		if err == sql.ErrNoRows {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"success": false,
-				"message": "No attendance record found for this student on the specified date",
-			})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Error querying attendance history: %v", err),
-		})
-		return
-	}
-
-	// Check if the student is marked as late
-	if status != "late" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Student is not marked as late (current status: %s)", status),
-		})
-		return
-	}
-
-	// Set the current time as the arrived_at time in China timezone (UTC+8)
-	chinaLoc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		chinaLoc = time.FixedZone("Asia/Shanghai", 8*60*60) // Fallback: UTC+8
-	}
-
-	arrivedAt := time.Now().In(chinaLoc).Format("15:04:05") // Current time in HH:MM:SS format
-
-	// Update the arrived_at field for this student's attendance record
-	_, err = db.Exec(`
-		UPDATE attendance_history 
-		SET arrived_at = $1
-		WHERE id = $2
-	`, arrivedAt, historyID)
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Error updating arrived_at time: %v", err),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success":    true,
-		"message":    "Student marked as arrived successfully",
-		"arrived_at": arrivedAt,
-	})
-}
-
 // SetupAttendanceRoutes sets up the attendance routes
 func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 	attendanceGroup := router.Group("/attendance")
@@ -1312,9 +1150,6 @@ func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 		})
 		attendanceGroup.GET("/history/:id", func(c *gin.Context) {
 			GetStudentAttendanceHistory(c, db)
-		})
-		attendanceGroup.POST("/mark-arrived", func(c *gin.Context) {
-			MarkStudentArrived(c, db)
 		})
 	}
 }
