@@ -1,40 +1,66 @@
 #!/bin/bash
 
-# This simple script forces auto-marking on the server immediately
-# Usage: ./force_auto_mark.sh [server_url]
+# Set default values
+DEFAULT_HOUR=23
+DEFAULT_MINUTE=40
+DEFAULT_ENABLED=true
 
-# Default to localhost if no URL provided, otherwise use the provided URL
-if [ -z "$1" ]; then
-    # Try to detect if we're running in production or locally
-    if ping -c 1 connect.hsannu.com &>/dev/null; then
-        SERVER_URL="https://connect.hsannu.com"
-        echo "No server URL provided, using production server: $SERVER_URL"
-    else
-        SERVER_URL="http://localhost:2000"
-        echo "No server URL provided, using local server: $SERVER_URL"
-    fi
-else
-    SERVER_URL="$1"
-    echo "Using provided server URL: $SERVER_URL"
+echo "=========================================="
+echo "🔧 Auto-Mark Settings Updater"
+echo "=========================================="
+
+# Ask user for hour or use default
+read -p "Enter UTC hour (0-23) [$DEFAULT_HOUR]: " HOUR
+HOUR=${HOUR:-$DEFAULT_HOUR}
+
+# Ask user for minute or use default
+read -p "Enter UTC minute (0-59) [$DEFAULT_MINUTE]: " MINUTE
+MINUTE=${MINUTE:-$DEFAULT_MINUTE}
+
+# Ask user for enabled status or use default
+read -p "Enable auto-marking? (true/false) [$DEFAULT_ENABLED]: " ENABLED
+ENABLED=${ENABLED:-$DEFAULT_ENABLED}
+
+# Calculate Shanghai time (UTC+8)
+SHANGHAI_HOUR=$(( (HOUR + 8) % 24 ))
+
+echo ""
+echo "You are about to set auto-marking to:"
+echo "- UTC Time:       $HOUR:$MINUTE"
+echo "- Shanghai Time:  $SHANGHAI_HOUR:$MINUTE"
+echo "- Enabled:        $ENABLED"
+echo ""
+
+read -p "Proceed? (y/n): " CONFIRM
+if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+    echo "Operation cancelled."
+    exit 0
 fi
 
-# Current UTC time for reference
-echo "Current UTC time: $(date -u)"
-
-# First try the direct test endpoint (simplest)
-echo ""
-echo "Method 1: Using /test/auto-mark endpoint..."
-curl -s "$SERVER_URL/api/test/auto-mark"
-echo ""
-
-# Then try forcing via the settings endpoint (most reliable)
-echo ""
-echo "Method 2: Using force flag with settings endpoint..."
-curl -s -X POST "$SERVER_URL/api/settings/auto-mark?run_now=true" \
+# Update settings via API
+echo "Updating auto-mark settings..."
+RESPONSE=$(curl -s -X POST "https://connect.hsannu.com/api/settings/auto-mark" \
      -H "Content-Type: application/json" \
-     -d "{}"
-echo ""
+     -d "{\"hour\": $HOUR, \"minute\": $MINUTE, \"enabled\": $ENABLED}")
 
 echo ""
-echo "Auto-marking force requests sent!"
-echo "Check server logs for [AUTO-MARK] entries to confirm operation." 
+echo "Response from server:"
+echo "$RESPONSE"
+echo ""
+
+# Ask if user wants to run auto-marking now
+read -p "Do you want to run auto-marking now? (y/n): " RUN_NOW
+if [[ "$RUN_NOW" == "y" || "$RUN_NOW" == "Y" ]]; then
+    echo "Triggering auto-marking now..."
+    RESPONSE=$(curl -s -X POST "https://connect.hsannu.com/api/settings/auto-mark?run_now=true" \
+         -H "Content-Type: application/json" \
+         -d "{\"hour\": $HOUR, \"minute\": $MINUTE, \"enabled\": $ENABLED}")
+    
+    echo "Response from server:"
+    echo "$RESPONSE"
+fi
+
+echo ""
+echo "=========================================="
+echo "✅ Configuration complete!"
+echo "==========================================" 

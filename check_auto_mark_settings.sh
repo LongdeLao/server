@@ -1,48 +1,39 @@
 #!/bin/bash
 
-# This script checks the current auto-mark settings on the server
-# Usage: ./check_auto_mark_settings.sh [server_url]
+# Get the current UTC time
+UTC_TIME=$(date -u +"%H:%M:%S")
+UTC_DATE=$(date -u +"%Y-%m-%d")
 
-# Default to localhost if no URL provided, otherwise use the provided URL
-if [ -z "$1" ]; then
-    # Try to detect if we're running in production or locally
-    if ping -c 1 connect.hsannu.com &>/dev/null; then
-        SERVER_URL="https://connect.hsannu.com"
-        echo "No server URL provided, using production server: $SERVER_URL"
-    else
-        SERVER_URL="http://localhost:2000"
-        echo "No server URL provided, using local server: $SERVER_URL"
-    fi
-else
-    SERVER_URL="$1"
-    echo "Using provided server URL: $SERVER_URL"
-fi
+# Get the current Shanghai time (UTC+8)
+SHANGHAI_TIME=$(TZ="Asia/Shanghai" date +"%H:%M:%S")
+SHANGHAI_DATE=$(TZ="Asia/Shanghai" date +"%Y-%m-%d")
 
-# Current UTC time for reference
-echo "Current UTC time: $(date -u)"
+echo "=========================================="
+echo "📊 Auto-Mark Settings Checker"
+echo "=========================================="
+echo "Current UTC time:      $UTC_TIME ($UTC_DATE)"
+echo "Current Shanghai time: $SHANGHAI_TIME ($SHANGHAI_DATE)"
+echo "=========================================="
 
-# Check auto-mark settings
-echo ""
-echo "Checking auto-mark settings..."
-RESPONSE=$(curl -s "$SERVER_URL/api/settings/auto-mark")
-echo "$RESPONSE"
+# Make API request to check auto-mark settings
+RESPONSE=$(curl -s https://connect.hsannu.com/api/settings/auto-mark)
 
-# Show Shanghai time equivalent for the configured auto-mark time
-if [[ "$RESPONSE" == *"hour"* && "$RESPONSE" == *"minute"* ]]; then
-    # Try to extract hour and minute values using regex
-    HOUR=$(echo "$RESPONSE" | grep -o '"hour":[0-9]*' | cut -d':' -f2)
-    MINUTE=$(echo "$RESPONSE" | grep -o '"minute":[0-9]*' | cut -d':' -f2)
-    
-    if [[ -n "$HOUR" && -n "$MINUTE" ]]; then
-        # Calculate Shanghai time (UTC+8)
-        SHANGHAI_HOUR=$(( (HOUR + 8) % 24 ))
-        echo ""
-        echo "Auto-mark time: ${HOUR}:${MINUTE} UTC = ${SHANGHAI_HOUR}:${MINUTE} Shanghai time"
-    fi
-fi
+# Parse the JSON response
+HOUR=$(echo $RESPONSE | grep -o '"hour":[0-9]*' | cut -d ':' -f 2)
+MINUTE=$(echo $RESPONSE | grep -o '"minute":[0-9]*' | cut -d ':' -f 2)
+ENABLED=$(echo $RESPONSE | grep -o '"enabled":\(true\|false\)' | cut -d ':' -f 2)
 
-echo ""
-echo "To update settings, use:"
-echo "curl -X POST \"$SERVER_URL/api/settings/auto-mark\" \\"
-echo "     -H \"Content-Type: application/json\" \\"
-echo "     -d '{\"hour\": 20, \"minute\": 12, \"enabled\": true}'" 
+# Calculate Shanghai time (UTC+8)
+SHANGHAI_HOUR=$(( (HOUR + 8) % 24 ))
+
+echo "Auto-Mark Configuration:"
+echo "- UTC Time:       $HOUR:$MINUTE"
+echo "- Shanghai Time:  $SHANGHAI_HOUR:$MINUTE"
+echo "- Enabled:        $ENABLED"
+echo "=========================================="
+echo "Note: Auto-marking should be set to 23:40 UTC (7:40 Shanghai time)"
+echo "      to mark students as late at 7:40 AM China time."
+echo "=========================================="
+echo "To update settings, use: ./force_auto_mark.sh"
+echo "To test auto-marking now: ./test_auto_mark_now.sh"
+echo "==========================================" 
