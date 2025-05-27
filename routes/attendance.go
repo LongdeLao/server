@@ -690,6 +690,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 			// Check if this is a special Late_Arrived status (manually marked as arrived)
 			isLateArrived := strings.ToUpper(student.Status) == "LATE_ARRIVED"
 
+			// The database has a constraint that only allows arrived_at to be set when status is "late"
 			if lowerCaseStatus == "late" && isLateArrived {
 				// Only set arrived_at time for Late_Arrived status (manual marking)
 				arrivedAt = time.Now().UTC().Format("15:04:05") // Current UTC time in HH:MM:SS format
@@ -772,11 +773,29 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 				}
 
 				// Update the record with the new status
-				_, err = tx.Exec(`
-					UPDATE attendance_history 
-					SET status = $1, arrived_at = $2
-					WHERE id = $3
-				`, lowerCaseStatus, arrivedAt, existingId)
+				// Be extra careful about the arrived_at field due to the database constraint
+				var updateQuery string
+				var updateArgs []interface{}
+
+				if lowerCaseStatus == "late" {
+					// For "late" status, we might set arrived_at
+					updateQuery = `
+						UPDATE attendance_history 
+						SET status = $1, arrived_at = $2
+						WHERE id = $3
+					`
+					updateArgs = []interface{}{lowerCaseStatus, arrivedAt, existingId}
+				} else {
+					// For non-late statuses, don't try to set arrived_at to avoid violating the constraint
+					updateQuery = `
+						UPDATE attendance_history 
+						SET status = $1, arrived_at = NULL
+						WHERE id = $2
+					`
+					updateArgs = []interface{}{lowerCaseStatus, existingId}
+				}
+
+				_, err = tx.Exec(updateQuery, updateArgs...)
 
 				if err != nil {
 					tx.Rollback()
