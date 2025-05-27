@@ -1474,70 +1474,91 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 	// Get date in YYYY-MM-DD format from the time
 	today := now.Format("2006-01-02")
 
-	fmt.Printf("Starting auto-marking of late students at %s (UTC)\n", now.Format(time.RFC3339))
+	fmt.Printf("[AUTO-MARK] Starting auto-marking of late students at %s (UTC)\n", now.Format(time.RFC3339))
+	fmt.Printf("[AUTO-MARK] Using date: %s\n", today)
 
 	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {
-		fmt.Printf("Error starting transaction: %v\n", err)
+		fmt.Printf("[AUTO-MARK ERROR] Error starting transaction: %v\n", err)
 		return
 	}
 
 	// Get all students with "Pending" status
+	fmt.Println("[AUTO-MARK] Querying for students with 'Pending' status...")
 	rows, err := tx.Query(`
-		SELECT user_id 
+		SELECT user_id, name
 		FROM attendance 
 		WHERE today = 'Pending'
 	`)
 
 	if err != nil {
 		tx.Rollback()
-		fmt.Printf("Error querying pending students: %v\n", err)
+		fmt.Printf("[AUTO-MARK ERROR] Error querying pending students: %v\n", err)
 		return
 	}
 	defer rows.Close()
 
 	// Collect student IDs
-	var studentIDs []int
+	type studentInfo struct {
+		ID   int
+		Name string
+	}
+	var students []studentInfo
+
 	for rows.Next() {
-		var studentID int
-		if err := rows.Scan(&studentID); err != nil {
+		var student studentInfo
+		if err := rows.Scan(&student.ID, &student.Name); err != nil {
 			tx.Rollback()
-			fmt.Printf("Error scanning student ID: %v\n", err)
+			fmt.Printf("[AUTO-MARK ERROR] Error scanning student data: %v\n", err)
 			return
 		}
-		studentIDs = append(studentIDs, studentID)
+		students = append(students, student)
 	}
 
 	// Check for errors during iteration
 	if err = rows.Err(); err != nil {
 		tx.Rollback()
-		fmt.Printf("Error iterating through students: %v\n", err)
+		fmt.Printf("[AUTO-MARK ERROR] Error iterating through students: %v\n", err)
 		return
 	}
 
 	// Early exit if no pending students
-	if len(studentIDs) == 0 {
+	if len(students) == 0 {
 		tx.Rollback() // No changes made
-		fmt.Println("No pending students to mark late")
+		fmt.Println("[AUTO-MARK] No pending students to mark late")
 		return
 	}
 
-	fmt.Printf("Auto-marking %d students as late\n", len(studentIDs))
+	fmt.Printf("[AUTO-MARK] Found %d students with 'Pending' status\n", len(students))
+	for i, student := range students {
+		if i < 5 { // Log only the first 5 to avoid overwhelming logs
+			fmt.Printf("[AUTO-MARK]   - Student #%d: ID=%d, Name=%s\n", i+1, student.ID, student.Name)
+		} else if i == 5 {
+			fmt.Printf("[AUTO-MARK]   - ...and %d more students\n", len(students)-5)
+			break
+		}
+	}
 
 	// Update each student to "Late" status
-	for _, studentID := range studentIDs {
+	successCount := 0
+	errorCount := 0
+
+	for i, student := range students {
+		fmt.Printf("[AUTO-MARK] Processing student %d/%d: ID=%d, Name=%s\n",
+			i+1, len(students), student.ID, student.Name)
+
 		// Update attendance table
 		_, err = tx.Exec(`
 			UPDATE attendance 
 			SET today = 'Late'
 			WHERE user_id = $1
-		`, studentID)
+		`, student.ID)
 
 		if err != nil {
-			tx.Rollback()
-			fmt.Printf("Error updating attendance for student %d: %v\n", studentID, err)
-			return
+			fmt.Printf("[AUTO-MARK ERROR] Error updating attendance for student %d: %v\n", student.ID, err)
+			errorCount++
+			continue
 		}
 
 		// Check if a record already exists for today
@@ -1545,26 +1566,27 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 		err = tx.QueryRow(`
 			SELECT id FROM attendance_history 
 			WHERE student_id = $1 AND attendance_date = $2
-		`, studentID, today).Scan(&existingId)
+		`, student.ID, today).Scan(&existingId)
 
 		if err != nil && err != sql.ErrNoRows {
-			tx.Rollback()
-			fmt.Printf("Error checking for existing attendance history: %v\n", err)
-			return
+			fmt.Printf("[AUTO-MARK ERROR] Error checking for existing attendance history for student %d: %v\n", student.ID, err)
+			errorCount++
+			continue
 		}
 
 		if err == sql.ErrNoRows {
 			// Insert new record with NULL arrived_at
+			fmt.Printf("[AUTO-MARK] No existing record found for student %d, creating new entry\n", student.ID)
 			_, err = tx.Exec(`
 				INSERT INTO attendance_history 
 				(student_id, status, attendance_date, arrived_at, created_at)
 				VALUES ($1, 'late', $2, NULL, $3)
-			`, studentID, today, time.Now().UTC())
+			`, student.ID, today, time.Now().UTC())
 
 			if err != nil {
-				tx.Rollback()
-				fmt.Printf("Error inserting attendance history for student %d: %v\n", studentID, err)
-				return
+				fmt.Printf("[AUTO-MARK ERROR] Error inserting attendance history for student %d: %v\n", student.ID, err)
+				errorCount++
+				continue
 			}
 
 			// Increment the late counter
@@ -1572,15 +1594,18 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 				UPDATE attendance 
 				SET late = late + 1
 				WHERE user_id = $1
-			`, studentID)
+			`, student.ID)
 
 			if err != nil {
-				tx.Rollback()
-				fmt.Printf("Error incrementing late counter for student %d: %v\n", studentID, err)
-				return
+				fmt.Printf("[AUTO-MARK ERROR] Error incrementing late counter for student %d: %v\n", student.ID, err)
+				errorCount++
+				continue
 			}
 		} else {
 			// Update existing record to late with NULL arrived_at
+			fmt.Printf("[AUTO-MARK] Existing record found (ID=%d) for student %d, updating to 'late'\n",
+				existingId, student.ID)
+
 			_, err = tx.Exec(`
 				UPDATE attendance_history 
 				SET status = 'late', arrived_at = NULL
@@ -1588,9 +1613,9 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 			`, existingId)
 
 			if err != nil {
-				tx.Rollback()
-				fmt.Printf("Error updating attendance history for student %d: %v\n", studentID, err)
-				return
+				fmt.Printf("[AUTO-MARK ERROR] Error updating attendance history for student %d: %v\n", student.ID, err)
+				errorCount++
+				continue
 			}
 
 			// Adjust the counters - first get the old status
@@ -1601,10 +1626,12 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 			`, existingId).Scan(&oldStatus)
 
 			if err != nil {
-				tx.Rollback()
-				fmt.Printf("Error getting old status: %v\n", err)
-				return
+				fmt.Printf("[AUTO-MARK ERROR] Error getting old status for student %d: %v\n", student.ID, err)
+				errorCount++
+				continue
 			}
+
+			fmt.Printf("[AUTO-MARK] Student %d previous status was '%s'\n", student.ID, oldStatus)
 
 			// Decrement the old counter if it's not 'late' already
 			if oldStatus != "late" {
@@ -1614,12 +1641,13 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 						UPDATE attendance 
 						SET %s = GREATEST(0, %s - 1)
 						WHERE user_id = $1
-					`, oldCounterField, oldCounterField), studentID)
+					`, oldCounterField, oldCounterField), student.ID)
 
 					if err != nil {
-						tx.Rollback()
-						fmt.Printf("Error decrementing %s counter for student %d: %v\n", oldCounterField, studentID, err)
-						return
+						fmt.Printf("[AUTO-MARK ERROR] Error decrementing %s counter for student %d: %v\n",
+							oldCounterField, student.ID, err)
+						errorCount++
+						continue
 					}
 				}
 
@@ -1628,24 +1656,27 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 					UPDATE attendance 
 					SET late = late + 1
 					WHERE user_id = $1
-				`, studentID)
+				`, student.ID)
 
 				if err != nil {
-					tx.Rollback()
-					fmt.Printf("Error incrementing late counter for student %d: %v\n", studentID, err)
-					return
+					fmt.Printf("[AUTO-MARK ERROR] Error incrementing late counter for student %d: %v\n", student.ID, err)
+					errorCount++
+					continue
 				}
 			}
 		}
+
+		successCount++
 	}
 
 	// Commit the transaction
 	if err = tx.Commit(); err != nil {
-		fmt.Printf("Error committing transaction: %v\n", err)
+		fmt.Printf("[AUTO-MARK ERROR] Error committing transaction: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Successfully auto-marked %d students as late\n", len(studentIDs))
+	fmt.Printf("[AUTO-MARK] Successfully auto-marked %d students as late (%d errors)\n",
+		successCount, errorCount)
 }
 
 // SetupAttendanceRoutes sets up the attendance routes

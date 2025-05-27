@@ -42,23 +42,38 @@ func setupAutoMarkScheduler(db *sql.DB) {
 	go func() {
 		log.Println("Starting auto-mark scheduler...")
 
+		// Log the initial configuration
+		log.Printf("Auto-mark configuration: Hour=%d, Minute=%d, Enabled=%v",
+			config.AutoMarkHour, config.AutoMarkMinute, config.AutoMarkEnabled)
+
 		// Create a ticker that checks every minute
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
+
+		// For debugging: log a heartbeat every 5 minutes
+		lastHeartbeat := time.Now().UTC()
 
 		for {
 			select {
 			case <-ticker.C:
 				now := time.Now().UTC()
 
+				// Log a heartbeat every 5 minutes to show the scheduler is running
+				if now.Sub(lastHeartbeat) >= 5*time.Minute {
+					log.Printf("AUTO-MARK HEARTBEAT: Current UTC time: %s, Config time: %02d:%02d, Enabled: %v",
+						now.Format("15:04:05"), config.AutoMarkHour, config.AutoMarkMinute, config.AutoMarkEnabled)
+					lastHeartbeat = now
+				}
+
 				// Skip if auto-marking is disabled
 				if !config.AutoMarkEnabled {
+					log.Println("AUTO-MARK: Skipping check because auto-marking is disabled")
 					continue
 				}
 
 				// Check if force auto-mark is enabled for testing
 				if config.ForceAutoMark {
-					log.Printf("Forced auto-marking triggered at %s (UTC)", now.Format(time.RFC3339))
+					log.Printf("AUTO-MARK: Forced auto-marking triggered at %s (UTC)", now.Format(time.RFC3339))
 					routes.AutoMarkLateStudents(db, nil)
 					config.ForceAutoMark = false // Reset flag after use
 					continue
@@ -66,15 +81,30 @@ func setupAutoMarkScheduler(db *sql.DB) {
 
 				// Check if it's a weekday (Monday-Friday)
 				if now.Weekday() >= time.Monday && now.Weekday() <= time.Friday {
+					// Log when we're getting close to the auto-mark time
+					if now.Hour() == config.AutoMarkHour &&
+						(now.Minute() == config.AutoMarkMinute-1 || now.Minute() == config.AutoMarkMinute) {
+						log.Printf("AUTO-MARK: Close to auto-mark time! Current: %02d:%02d, Target: %02d:%02d",
+							now.Hour(), now.Minute(), config.AutoMarkHour, config.AutoMarkMinute)
+					}
+
 					// Check if current time matches the configured auto-mark time
 					if now.Hour() == config.AutoMarkHour && now.Minute() == config.AutoMarkMinute {
-						log.Printf("Running scheduled auto-marking at %s (UTC)", now.Format(time.RFC3339))
+						log.Printf("AUTO-MARK: Running scheduled auto-marking at %s (UTC)", now.Format(time.RFC3339))
 
 						// Call the auto-marking function with nil to use current time
 						routes.AutoMarkLateStudents(db, nil)
 
 						// Sleep for 70 seconds to avoid running twice if the check happens right at the configured minute
+						log.Println("AUTO-MARK: Sleeping for 70 seconds to avoid duplicate runs")
 						time.Sleep(70 * time.Second)
+						log.Println("AUTO-MARK: Woke up from sleep, resuming scheduler")
+					}
+				} else {
+					// Only log this once per day to avoid spamming
+					if now.Hour() == 0 && now.Minute() == 0 {
+						log.Printf("AUTO-MARK: Today is %s, not a weekday (Mon-Fri), auto-marking will not run today",
+							now.Weekday())
 					}
 				}
 			}

@@ -38,8 +38,8 @@ var (
 
 // Auto-marking configuration
 var (
-	AutoMarkHour    int  = 12 // UTC hour (0-23), default is 23:40 UTC (7:40 AM Shanghai time)
-	AutoMarkMinute  int  = 23 // UTC minute (0-59)
+	AutoMarkHour    int  = 20 // UTC hour (0-23), default is 23:40 UTC (7:40 AM Shanghai time)
+	AutoMarkMinute  int  = 12 // UTC minute (0-59)
 	AutoMarkEnabled bool = true
 	ForceAutoMark   bool = false // Set to true to force auto-marking on next check (for testing)
 )
