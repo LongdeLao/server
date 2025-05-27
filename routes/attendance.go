@@ -338,6 +338,24 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 		} `json:"students"`
 	}
 
+	// Helper function to map status to counter field name
+	getCounterField := func(status string) string {
+		switch status {
+		case "present":
+			return "present"
+		case "absent":
+			return "absent"
+		case "late":
+			return "late"
+		case "medical":
+			return "medical"
+		case "early":
+			return "early"
+		default:
+			return ""
+		}
+	}
+
 	// Read the raw body first for debugging
 	bodyBytes, err := c.GetRawData()
 	if err != nil {
@@ -371,6 +389,20 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 			"message": "No students provided in the request",
 		})
 		return
+	}
+
+	// Parse the attendance date from the request or use today's date
+	attendanceDate := time.Now()
+	if request.Date != "" {
+		parsedDate, err := time.Parse("2006-01-02", request.Date)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Invalid date format: %v", err),
+			})
+			return
+		}
+		attendanceDate = parsedDate
 	}
 
 	// Start a transaction
@@ -433,6 +465,153 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 		rowsAffected, _ := result.RowsAffected()
 		if rowsAffected == 0 {
 			fmt.Printf("Warning: No rows updated for user ID %d\n", student.UserID)
+		}
+
+		// Only insert into attendance_history if status is not empty or "Pending"
+		if student.Status != "" && student.Status != "Pending" {
+			// Convert status to lowercase for attendance_history table
+			statusLower := strings.ToLower(student.Status)
+
+			// For late students, we need to set the arrived_at time
+			var arrivedAt interface{}
+			if statusLower == "late" {
+				arrivedAt = time.Now().Format("15:04:05") // Current time in HH:MM:SS format
+			} else {
+				arrivedAt = nil // NULL for non-late status
+			}
+
+			// Check if an entry already exists for this student on this date
+			var existingId int
+			err = tx.QueryRow(`
+				SELECT id FROM attendance_history 
+				WHERE student_id = $1 AND attendance_date = $2
+			`, student.UserID, attendanceDate.Format("2006-01-02")).Scan(&existingId)
+
+			if err != nil && err != sql.ErrNoRows {
+				tx.Rollback()
+				fmt.Printf("Error checking for existing attendance history: %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": fmt.Sprintf("Error checking for existing attendance history: %v", err),
+				})
+				return
+			}
+
+			if err == sql.ErrNoRows {
+				// No existing entry, insert a new one
+				_, err = tx.Exec(`
+					INSERT INTO attendance_history 
+					(student_id, status, attendance_date, arrived_at)
+					VALUES ($1, $2, $3, $4)
+				`, student.UserID, statusLower, attendanceDate.Format("2006-01-02"), arrivedAt)
+
+				if err != nil {
+					tx.Rollback()
+					fmt.Printf("Error inserting into attendance_history for user ID %d: %v\n", student.UserID, err)
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"success": false,
+						"message": fmt.Sprintf("Error inserting into attendance_history for user ID %d: %v", student.UserID, err),
+					})
+					return
+				}
+
+				// Increment the corresponding counter in the attendance table for new entries
+				counterField := getCounterField(statusLower)
+				if counterField != "" {
+					_, err = tx.Exec(fmt.Sprintf(`
+						UPDATE attendance 
+						SET %s = %s + 1
+						WHERE user_id = $1
+					`, counterField, counterField), student.UserID)
+
+					if err != nil {
+						tx.Rollback()
+						fmt.Printf("Error updating %s counter for user ID %d: %v\n", counterField, student.UserID, err)
+						c.JSON(http.StatusInternalServerError, gin.H{
+							"success": false,
+							"message": fmt.Sprintf("Error updating %s counter for user ID %d: %v", counterField, student.UserID, err),
+						})
+						return
+					}
+				}
+			} else {
+				// Entry exists, get the old status before updating
+				var oldStatus string
+				err = tx.QueryRow(`
+					SELECT status FROM attendance_history 
+					WHERE id = $1
+				`, existingId).Scan(&oldStatus)
+
+				if err != nil {
+					tx.Rollback()
+					fmt.Printf("Error getting old status: %v\n", err)
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"success": false,
+						"message": fmt.Sprintf("Error getting old status: %v", err),
+					})
+					return
+				}
+
+				// Update the record with the new status
+				_, err = tx.Exec(`
+					UPDATE attendance_history 
+					SET status = $1, arrived_at = $2
+					WHERE id = $3
+				`, statusLower, arrivedAt, existingId)
+
+				if err != nil {
+					tx.Rollback()
+					fmt.Printf("Error updating attendance_history for user ID %d: %v\n", student.UserID, err)
+					c.JSON(http.StatusInternalServerError, gin.H{
+						"success": false,
+						"message": fmt.Sprintf("Error updating attendance_history for user ID %d: %v", student.UserID, err),
+					})
+					return
+				}
+
+				// If the status has changed, update the counters in the attendance table
+				if oldStatus != statusLower {
+					// Decrement the old status counter
+					oldCounterField := getCounterField(oldStatus)
+					if oldCounterField != "" {
+						_, err = tx.Exec(fmt.Sprintf(`
+							UPDATE attendance 
+							SET %s = GREATEST(0, %s - 1)
+							WHERE user_id = $1
+						`, oldCounterField, oldCounterField), student.UserID)
+
+						if err != nil {
+							tx.Rollback()
+							fmt.Printf("Error decrementing %s counter for user ID %d: %v\n", oldCounterField, student.UserID, err)
+							c.JSON(http.StatusInternalServerError, gin.H{
+								"success": false,
+								"message": fmt.Sprintf("Error decrementing %s counter for user ID %d: %v", oldCounterField, student.UserID, err),
+							})
+							return
+						}
+					}
+
+					// Increment the new status counter
+					newCounterField := getCounterField(statusLower)
+					if newCounterField != "" {
+						_, err = tx.Exec(fmt.Sprintf(`
+							UPDATE attendance 
+							SET %s = %s + 1
+							WHERE user_id = $1
+						`, newCounterField, newCounterField), student.UserID)
+
+						if err != nil {
+							tx.Rollback()
+							fmt.Printf("Error incrementing %s counter for user ID %d: %v\n", newCounterField, student.UserID, err)
+							c.JSON(http.StatusInternalServerError, gin.H{
+								"success": false,
+								"message": fmt.Sprintf("Error incrementing %s counter for user ID %d: %v", newCounterField, student.UserID, err),
+							})
+							return
+						}
+					}
+				}
+			}
 		}
 	}
 
