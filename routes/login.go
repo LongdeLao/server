@@ -118,6 +118,10 @@ func loginHandler(c *gin.Context) {
 		return
 	}
 
+	// Debug: Print user data after scanning
+	fmt.Printf("DEBUG: User data after scan - ID: %d, Username: %s, Name: %s, Email: '%s', Role: %s, Status: %s\n",
+		user.ID, user.Username, user.Name, user.Email, user.Role, user.Status)
+
 	// Check if password is already hashed (for legacy support)
 	passwordIsValid := false
 	if utils.IsHashedPassword(user.Password) {
@@ -197,6 +201,9 @@ func loginHandler(c *gin.Context) {
 	if err == nil && filePath.Valid {
 		profilePicture = fmt.Sprintf("/%s", filePath.String)
 	}
+
+	// Debug: Print final response data
+	fmt.Printf("DEBUG: Final response data - Email: '%s'\n", user.Email)
 
 	// Return user data with additional roles and status
 	c.JSON(http.StatusOK, gin.H{
