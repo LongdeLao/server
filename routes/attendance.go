@@ -147,13 +147,14 @@ func GetYearGroups(c *gin.Context, db *sql.DB) {
 		}
 
 		// Query to get attendance statistics for this year group
-		var totalPresent, totalCount int
+		var totalPresent, totalLate, totalCount int
 		err = db.QueryRow(`
 			SELECT COALESCE(SUM(present), 0), 
+			       COALESCE(SUM(late), 0),
 			       COUNT(*) 
 			FROM attendance 
 			WHERE year = $1 AND group_name = $2
-		`, group.Year, group.Section).Scan(&totalPresent, &totalCount)
+		`, group.Year, group.Section).Scan(&totalPresent, &totalLate, &totalCount)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -163,11 +164,21 @@ func GetYearGroups(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Calculate attendance percentage
+		// Calculate attendance percentage - include both present and late students
 		var attendancePercentage string
 		if totalCount > 0 {
-			percentage := float64(totalPresent) / float64(totalCount) * 100
-			attendancePercentage = fmt.Sprintf("%.1f%%", percentage)
+			// Late students still count as attending, so include them in the percentage
+			attendanceCount := totalPresent + totalLate
+			totalClasses := attendanceCount // This is actually the total days attended
+
+			// If no classes have been recorded yet, use the student count as divisor
+			if totalClasses == 0 {
+				attendancePercentage = "0%"
+			} else {
+				// Calculate the percentage based on present + late students
+				percentage := float64(attendanceCount) / float64(totalCount) * 100
+				attendancePercentage = fmt.Sprintf("%.1f%%", percentage)
+			}
 		} else {
 			attendancePercentage = "0%"
 		}
@@ -1204,7 +1215,9 @@ func GetStudentAttendance(c *gin.Context, db *sql.DB) {
 	totalClasses := record.Present + record.Absent + record.Late + record.Medical + record.Early
 	var attendancePercentage float64
 	if totalClasses > 0 {
-		attendancePercentage = float64(record.Present) / float64(totalClasses) * 100
+		// Late students still count as attending, so include them in the percentage
+		attendanceCount := record.Present + record.Late
+		attendancePercentage = float64(attendanceCount) / float64(totalClasses) * 100
 	}
 
 	response := gin.H{
