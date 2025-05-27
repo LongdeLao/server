@@ -1378,6 +1378,9 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 		attendanceDate = parsedDate
 	}
 
+	// Format date for database queries
+	dateStr := attendanceDate.Format("2006-01-02")
+
 	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {
@@ -1388,20 +1391,91 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// First, check if student is marked as late for this date
-	var existingId int
-	var currentStatus string
+	// Step 1: Check student's current status in the attendance table
+	var todayStatus string
 	err = tx.QueryRow(`
-		SELECT id, status FROM attendance_history 
-		WHERE student_id = $1 AND attendance_date = $2
-	`, request.StudentID, attendanceDate.Format("2006-01-02")).Scan(&existingId, &currentStatus)
+		SELECT today FROM attendance 
+		WHERE user_id = $1
+	`, request.StudentID).Scan(&todayStatus)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
 			tx.Rollback()
 			c.JSON(http.StatusNotFound, gin.H{
 				"success": false,
-				"message": "No attendance record found for this student on this date",
+				"message": "Student not found in attendance records",
+			})
+			return
+		}
+
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error checking attendance status: %v", err),
+		})
+		return
+	}
+
+	// Update attendance table to 'Late' if needed
+	if todayStatus != "Late" {
+		_, err = tx.Exec(`
+			UPDATE attendance 
+			SET today = 'Late', late = late + 1
+			WHERE user_id = $1
+		`, request.StudentID)
+
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Error updating attendance status: %v", err),
+			})
+			return
+		}
+	}
+
+	// Step 2: Check if there's an existing record in attendance_history for today
+	var existingId int
+	var currentStatus string
+	err = tx.QueryRow(`
+		SELECT id, status FROM attendance_history 
+		WHERE student_id = $1 AND attendance_date = $2
+	`, request.StudentID, dateStr).Scan(&existingId, &currentStatus)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// No existing record, create a new one with 'late' status
+			arrivedTime := time.Now().UTC().Format("15:04:05")
+			_, err = tx.Exec(`
+				INSERT INTO attendance_history 
+				(student_id, status, attendance_date, arrived_at, created_at)
+				VALUES ($1, 'late', $2, $3, $4)
+			`, request.StudentID, dateStr, arrivedTime, time.Now().UTC())
+
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": fmt.Sprintf("Error creating attendance history record: %v", err),
+				})
+				return
+			}
+
+			// Commit the transaction
+			if err = tx.Commit(); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": fmt.Sprintf("Error committing transaction: %v", err),
+				})
+				return
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"success":    true,
+				"message":    "Student marked as late and arrival time recorded successfully",
+				"student_id": request.StudentID,
+				"arrived_at": arrivedTime,
+				"note":       "New record created",
 			})
 			return
 		}
@@ -1414,20 +1488,47 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Verify the student is marked as late
+	// Step 3: Update the existing record
+	// First, ensure status is 'late'
 	if currentStatus != "late" {
-		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Student is not marked as late (current status: %s)", currentStatus),
-		})
-		return
+		// Get counter field for the old status to adjust counters
+		oldCounterField := getCounterField(currentStatus)
+		if oldCounterField != "" {
+			_, err = tx.Exec(fmt.Sprintf(`
+				UPDATE attendance 
+				SET %s = GREATEST(0, %s - 1)
+				WHERE user_id = $1
+			`, oldCounterField, oldCounterField), request.StudentID)
+
+			if err != nil {
+				tx.Rollback()
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": fmt.Sprintf("Error adjusting old status counter: %v", err),
+				})
+				return
+			}
+		}
+
+		// Update status to 'late'
+		_, err = tx.Exec(`
+			UPDATE attendance_history 
+			SET status = 'late'
+			WHERE id = $1
+		`, existingId)
+
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Error updating status to late: %v", err),
+			})
+			return
+		}
 	}
 
-	// Set the arrival time in UTC
+	// Finally, set the arrival time
 	arrivedTime := time.Now().UTC().Format("15:04:05")
-
-	// Update the arrived_at field
 	_, err = tx.Exec(`
 		UPDATE attendance_history 
 		SET arrived_at = $1
