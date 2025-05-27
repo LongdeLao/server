@@ -199,6 +199,9 @@ func main() {
 	// Register server status route
 	routes.RegisterStatusRoute(apiRouter)
 
+	// Register credits routes
+	routes.SetupCreditsRoutes(apiRouter, db)
+
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
