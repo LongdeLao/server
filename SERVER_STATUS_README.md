@@ -47,6 +47,7 @@ The HSANNU server now supports interactive status configuration on startup. When
 - **HTTP Response**: 503 Service Unavailable
 - **Use Case**: Scheduled maintenance, updates, or temporary downtime
 - **Custom Message**: You can enter a custom maintenance message when prompted
+- **Estimated Finish**: You can specify when maintenance is expected to complete
 
 ### Construction (c)
 - **Status**: `construction`
@@ -54,6 +55,7 @@ The HSANNU server now supports interactive status configuration on startup. When
 - **HTTP Response**: 503 Service Unavailable
 - **Use Case**: Major updates, new feature development, or significant changes
 - **Custom Message**: You can enter a custom construction message when prompted
+- **Estimated Completion**: You can specify when construction is expected to complete
 
 ## API Endpoint
 
@@ -71,9 +73,12 @@ GET /api/check-status
   "version": "1.0.0",
   "uptime": "2h 30m 45s",
   "is_active": true|false,
-  "environment": "production|maintenance|development"
+  "environment": "production|maintenance|development",
+  "estimated_finish": "2 hours"
 }
 ```
+
+**Note**: The `estimated_finish` field is only included when the server is under maintenance or construction and an estimated time was provided.
 
 ### HTTP Status Codes
 - **200 OK**: Server is active and operational
@@ -104,7 +109,9 @@ Enter your choice [a/m/c] (default: a): a
 Enter your choice [a/m/c] (default: a): m
 🔧 Server status set to: MAINTENANCE
 Enter custom maintenance message (optional): Database migration in progress
+Enter estimated finish time (e.g., '2 hours', 'tomorrow 3pm', '30 minutes'): 2 hours
 📝 Status Message: Database migration in progress
+⏰ Estimated Finish: 2 hours
 ```
 
 ### Starting with Construction
@@ -112,5 +119,14 @@ Enter custom maintenance message (optional): Database migration in progress
 Enter your choice [a/m/c] (default: a): c
 🚧 Server status set to: CONSTRUCTION
 Enter custom construction message (optional): Adding new AI features
+Enter estimated completion time (e.g., '1 week', 'next Monday', '3 days'): 3 days
 📝 Status Message: Adding new AI features
-``` 
+⏰ Estimated Finish: 3 days
+```
+
+## iOS App Display
+
+The iOS app will display:
+- **Custom Message**: The server's custom message (if provided) instead of the default message
+- **Estimated Completion**: When available, shows "Expected completion: [time]" with a clock icon
+- **Server Details**: Full server information including estimated finish time in the details view 

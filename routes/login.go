@@ -107,8 +107,8 @@ func loginHandler(c *gin.Context) {
 	defer conn.Close()
 
 	var user models.User
-	query := "SELECT id, username, name, password, role, status FROM users WHERE username = $1"
-	err = conn.QueryRow(query, loginData.Username).Scan(&user.ID, &user.Username, &user.Name, &user.Password, &user.Role, &user.Status)
+	query := "SELECT id, username, name, password, role, status, email FROM users WHERE username = $1"
+	err = conn.QueryRow(query, loginData.Username).Scan(&user.ID, &user.Username, &user.Name, &user.Password, &user.Role, &user.Status, &user.Email)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -204,6 +204,7 @@ func loginHandler(c *gin.Context) {
 		"username":         user.Username,
 		"password":         user.Password,
 		"name":             user.Name,
+		"email":            user.Email,
 		"role":             user.Role,
 		"status":           user.Status,
 		"additional_roles": user.AdditionalRoles,
