@@ -15,6 +15,71 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+/*
+CRON JOB SETUP FOR AUTO-MARKING LATE STUDENTS
+
+This server includes a function to automatically mark students as late at 7:40 AM Shanghai time.
+To set this up, you need to create a cron job on the server.
+
+1. Create a small Go program that calls the AutoMarkLateStudents function:
+
+```go
+// auto_mark_late.go
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"log"
+	"server/routes"  // Import your server's routes package
+	"time"
+
+	_ "github.com/lib/pq"  // Or whatever database driver you're using
+)
+
+func main() {
+	// Connect to the database
+	db, err := sql.Open("postgres", "your_connection_string_here")
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	// Log the execution time
+	now := time.Now()
+	fmt.Printf("Auto-marking late students at %s\n", now.Format(time.RFC3339))
+
+	// Call the auto-mark function with nil to use current time
+	routes.AutoMarkLateStudents(db, nil)
+}
+```
+
+2. Compile this program:
+   ```
+   go build -o auto_mark_late auto_mark_late.go
+   ```
+
+3. Set up a cron job to run at 7:40 AM Shanghai time (which is UTC+8):
+   - 7:40 AM Shanghai time = 23:40 PM UTC (previous day)
+
+   Add this to your crontab (run `crontab -e`):
+   ```
+   # Run at 7:40 AM Shanghai time (23:40 UTC)
+   40 23 * * 1-5 /path/to/auto_mark_late >> /var/log/auto_mark_late.log 2>&1
+   ```
+
+   The '1-5' means Monday through Friday (weekdays only).
+
+4. Make sure the log file is writable:
+   ```
+   touch /var/log/auto_mark_late.log
+   chmod 644 /var/log/auto_mark_late.log
+   ```
+
+This setup will automatically mark pending students as late at 7:40 AM Shanghai time
+on weekdays, which matches the behavior previously implemented on the client side.
+*/
+
 // GetYearGroups returns all available year groups with attendance statistics from DB
 //
 // Endpoint: GET /api/attendance/year-groups
@@ -1274,6 +1339,315 @@ func GetAllAttendance(c *gin.Context, db *sql.DB) {
 	})
 }
 
+// New function for marking student arrival time
+func MarkStudentArrival(c *gin.Context, db *sql.DB) {
+	var request struct {
+		StudentID int    `json:"student_id"`
+		Date      string `json:"date"`
+	}
+
+	// Read and parse the request
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Invalid request format: %v", err),
+		})
+		return
+	}
+
+	// Validate student ID
+	if request.StudentID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid student ID",
+		})
+		return
+	}
+
+	// Parse the attendance date from the request or use today's date
+	attendanceDate := time.Now().UTC()
+	if request.Date != "" {
+		parsedDate, err := time.Parse("2006-01-02", request.Date)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Invalid date format: %v", err),
+			})
+			return
+		}
+		attendanceDate = parsedDate
+	}
+
+	// Start a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error starting transaction: %v", err),
+		})
+		return
+	}
+
+	// First, check if student is marked as late for this date
+	var existingId int
+	var currentStatus string
+	err = tx.QueryRow(`
+		SELECT id, status FROM attendance_history 
+		WHERE student_id = $1 AND attendance_date = $2
+	`, request.StudentID, attendanceDate.Format("2006-01-02")).Scan(&existingId, &currentStatus)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			tx.Rollback()
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": "No attendance record found for this student on this date",
+			})
+			return
+		}
+
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error checking attendance history: %v", err),
+		})
+		return
+	}
+
+	// Verify the student is marked as late
+	if currentStatus != "late" {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Student is not marked as late (current status: %s)", currentStatus),
+		})
+		return
+	}
+
+	// Set the arrival time in UTC
+	arrivedTime := time.Now().UTC().Format("15:04:05")
+
+	// Update the arrived_at field
+	_, err = tx.Exec(`
+		UPDATE attendance_history 
+		SET arrived_at = $1
+		WHERE id = $2
+	`, arrivedTime, existingId)
+
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error updating arrival time: %v", err),
+		})
+		return
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error committing transaction: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"message":    "Arrival time recorded successfully",
+		"student_id": request.StudentID,
+		"arrived_at": arrivedTime,
+	})
+}
+
+// New function to auto-mark students as late at 7:40 AM Shanghai time
+func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
+	// This function can be called by a cron job at 7:40 AM Shanghai time
+	// Or it can be called with a specific targetTime for testing
+
+	// If targetTime is nil, use current time
+	now := time.Now().UTC()
+	if targetTime != nil {
+		now = targetTime.UTC()
+	}
+
+	// Get date in YYYY-MM-DD format from the time
+	today := now.Format("2006-01-02")
+
+	fmt.Printf("Starting auto-marking of late students at %s (UTC)\n", now.Format(time.RFC3339))
+
+	// Start a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		fmt.Printf("Error starting transaction: %v\n", err)
+		return
+	}
+
+	// Get all students with "Pending" status
+	rows, err := tx.Query(`
+		SELECT user_id 
+		FROM attendance 
+		WHERE today = 'Pending'
+	`)
+
+	if err != nil {
+		tx.Rollback()
+		fmt.Printf("Error querying pending students: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	// Collect student IDs
+	var studentIDs []int
+	for rows.Next() {
+		var studentID int
+		if err := rows.Scan(&studentID); err != nil {
+			tx.Rollback()
+			fmt.Printf("Error scanning student ID: %v\n", err)
+			return
+		}
+		studentIDs = append(studentIDs, studentID)
+	}
+
+	// Check for errors during iteration
+	if err = rows.Err(); err != nil {
+		tx.Rollback()
+		fmt.Printf("Error iterating through students: %v\n", err)
+		return
+	}
+
+	// Early exit if no pending students
+	if len(studentIDs) == 0 {
+		tx.Rollback() // No changes made
+		fmt.Println("No pending students to mark late")
+		return
+	}
+
+	fmt.Printf("Auto-marking %d students as late\n", len(studentIDs))
+
+	// Update each student to "Late" status
+	for _, studentID := range studentIDs {
+		// Update attendance table
+		_, err = tx.Exec(`
+			UPDATE attendance 
+			SET today = 'Late'
+			WHERE user_id = $1
+		`, studentID)
+
+		if err != nil {
+			tx.Rollback()
+			fmt.Printf("Error updating attendance for student %d: %v\n", studentID, err)
+			return
+		}
+
+		// Check if a record already exists for today
+		var existingId int
+		err = tx.QueryRow(`
+			SELECT id FROM attendance_history 
+			WHERE student_id = $1 AND attendance_date = $2
+		`, studentID, today).Scan(&existingId)
+
+		if err != nil && err != sql.ErrNoRows {
+			tx.Rollback()
+			fmt.Printf("Error checking for existing attendance history: %v\n", err)
+			return
+		}
+
+		if err == sql.ErrNoRows {
+			// Insert new record with NULL arrived_at
+			_, err = tx.Exec(`
+				INSERT INTO attendance_history 
+				(student_id, status, attendance_date, arrived_at, created_at)
+				VALUES ($1, 'late', $2, NULL, $3)
+			`, studentID, today, time.Now().UTC())
+
+			if err != nil {
+				tx.Rollback()
+				fmt.Printf("Error inserting attendance history for student %d: %v\n", studentID, err)
+				return
+			}
+
+			// Increment the late counter
+			_, err = tx.Exec(`
+				UPDATE attendance 
+				SET late = late + 1
+				WHERE user_id = $1
+			`, studentID)
+
+			if err != nil {
+				tx.Rollback()
+				fmt.Printf("Error incrementing late counter for student %d: %v\n", studentID, err)
+				return
+			}
+		} else {
+			// Update existing record to late with NULL arrived_at
+			_, err = tx.Exec(`
+				UPDATE attendance_history 
+				SET status = 'late', arrived_at = NULL
+				WHERE id = $1
+			`, existingId)
+
+			if err != nil {
+				tx.Rollback()
+				fmt.Printf("Error updating attendance history for student %d: %v\n", studentID, err)
+				return
+			}
+
+			// Adjust the counters - first get the old status
+			var oldStatus string
+			err = tx.QueryRow(`
+				SELECT status FROM attendance_history 
+				WHERE id = $1
+			`, existingId).Scan(&oldStatus)
+
+			if err != nil {
+				tx.Rollback()
+				fmt.Printf("Error getting old status: %v\n", err)
+				return
+			}
+
+			// Decrement the old counter if it's not 'late' already
+			if oldStatus != "late" {
+				oldCounterField := getCounterField(oldStatus)
+				if oldCounterField != "" {
+					_, err = tx.Exec(fmt.Sprintf(`
+						UPDATE attendance 
+						SET %s = GREATEST(0, %s - 1)
+						WHERE user_id = $1
+					`, oldCounterField, oldCounterField), studentID)
+
+					if err != nil {
+						tx.Rollback()
+						fmt.Printf("Error decrementing %s counter for student %d: %v\n", oldCounterField, studentID, err)
+						return
+					}
+				}
+
+				// Increment the late counter
+				_, err = tx.Exec(`
+					UPDATE attendance 
+					SET late = late + 1
+					WHERE user_id = $1
+				`, studentID)
+
+				if err != nil {
+					tx.Rollback()
+					fmt.Printf("Error incrementing late counter for student %d: %v\n", studentID, err)
+					return
+				}
+			}
+		}
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		fmt.Printf("Error committing transaction: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Successfully auto-marked %d students as late\n", len(studentIDs))
+}
+
 // SetupAttendanceRoutes sets up the attendance routes
 func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 	attendanceGroup := router.Group("/attendance")
@@ -1295,6 +1669,9 @@ func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 		})
 		attendanceGroup.GET("/history/:id", func(c *gin.Context) {
 			GetStudentAttendanceHistory(c, db)
+		})
+		attendanceGroup.POST("/mark-arrival", func(c *gin.Context) {
+			MarkStudentArrival(c, db)
 		})
 	}
 }

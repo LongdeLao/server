@@ -36,6 +36,14 @@ var (
 	EstimatedFinish string = ""                           // Estimated finish time for maintenance/construction
 )
 
+// Auto-marking configuration
+var (
+	AutoMarkHour    int  = 23 // UTC hour (0-23), default is 23:40 UTC (7:40 AM Shanghai time)
+	AutoMarkMinute  int  = 40 // UTC minute (0-59)
+	AutoMarkEnabled bool = true
+	ForceAutoMark   bool = false // Set to true to force auto-marking on next check (for testing)
+)
+
 // AI Assistant configuration
 const (
 	AIAPIKey          = "sk-96744d1c86d149dcb3f906b8fcbcd210"
