@@ -56,6 +56,7 @@ func promptForServerStatus() {
 	case "a", "active", "":
 		config.ServerStatus = "active"
 		config.StatusMessage = "Server is running normally"
+		config.EstimatedFinish = ""
 		fmt.Println("✅ Server status set to: ACTIVE")
 	case "m", "maintenance":
 		config.ServerStatus = "maintenance"
@@ -69,6 +70,14 @@ func promptForServerStatus() {
 		if customMessage != "" {
 			config.StatusMessage = customMessage
 		}
+
+		// Ask for estimated finish time
+		fmt.Print("Enter estimated finish time (e.g., '2 hours', 'tomorrow 3pm', '30 minutes'): ")
+		estimatedFinish, _ := reader.ReadString('\n')
+		estimatedFinish = strings.TrimSpace(estimatedFinish)
+		if estimatedFinish != "" {
+			config.EstimatedFinish = estimatedFinish
+		}
 	case "c", "construction":
 		config.ServerStatus = "construction"
 		config.StatusMessage = "Server is under construction. New features are being added."
@@ -81,14 +90,26 @@ func promptForServerStatus() {
 		if customMessage != "" {
 			config.StatusMessage = customMessage
 		}
+
+		// Ask for estimated finish time
+		fmt.Print("Enter estimated completion time (e.g., '1 week', 'next Monday', '3 days'): ")
+		estimatedFinish, _ := reader.ReadString('\n')
+		estimatedFinish = strings.TrimSpace(estimatedFinish)
+		if estimatedFinish != "" {
+			config.EstimatedFinish = estimatedFinish
+		}
 	default:
 		fmt.Printf("❌ Invalid choice '%s'. Defaulting to ACTIVE.\n", input)
 		config.ServerStatus = "active"
 		config.StatusMessage = "Server is running normally"
+		config.EstimatedFinish = ""
 	}
 
 	fmt.Println()
 	fmt.Printf("📝 Status Message: %s\n", config.StatusMessage)
+	if config.EstimatedFinish != "" {
+		fmt.Printf("⏰ Estimated Finish: %s\n", config.EstimatedFinish)
+	}
 	fmt.Println()
 }
 

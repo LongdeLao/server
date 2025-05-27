@@ -31,8 +31,9 @@ const ServerPort = "2000"
 
 // Server status configuration (set dynamically in main.go)
 var (
-	ServerStatus  string = "active"                     // Default status
-	StatusMessage string = "Server is running normally" // Default message
+	ServerStatus    string = "active"                     // Default status
+	StatusMessage   string = "Server is running normally" // Default message
+	EstimatedFinish string = ""                           // Estimated finish time for maintenance/construction
 )
 
 // AI Assistant configuration

@@ -11,13 +11,14 @@ import (
 
 // StatusResponse represents the server status response
 type StatusResponse struct {
-	Status      string    `json:"status"`
-	Message     string    `json:"message"`
-	Timestamp   time.Time `json:"timestamp"`
-	Version     string    `json:"version"`
-	Uptime      string    `json:"uptime"`
-	IsActive    bool      `json:"is_active"`
-	Environment string    `json:"environment"`
+	Status          string    `json:"status"`
+	Message         string    `json:"message"`
+	Timestamp       time.Time `json:"timestamp"`
+	Version         string    `json:"version"`
+	Uptime          string    `json:"uptime"`
+	IsActive        bool      `json:"is_active"`
+	Environment     string    `json:"environment"`
+	EstimatedFinish string    `json:"estimated_finish,omitempty"` // Only include if not empty
 }
 
 var serverStartTime = time.Now()
@@ -34,13 +35,14 @@ func RegisterStatusRoute(router gin.IRouter) {
 
 		// Create response
 		response := StatusResponse{
-			Status:      config.ServerStatus,
-			Message:     config.StatusMessage,
-			Timestamp:   time.Now(),
-			Version:     "1.0.0", // You can make this configurable too
-			Uptime:      uptimeStr,
-			IsActive:    isActive,
-			Environment: getEnvironment(),
+			Status:          config.ServerStatus,
+			Message:         config.StatusMessage,
+			Timestamp:       time.Now(),
+			Version:         "1.0.0", // You can make this configurable too
+			Uptime:          uptimeStr,
+			IsActive:        isActive,
+			Environment:     getEnvironment(),
+			EstimatedFinish: config.EstimatedFinish,
 		}
 
 		// Set appropriate HTTP status code
