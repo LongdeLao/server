@@ -146,15 +146,16 @@ func GetYearGroups(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Query to get attendance statistics for this year group
-		var totalPresent, totalLate, totalCount int
+		// Query to get attendance statistics for this year group - counting students with "Present" and "Late" status today
+		var presentToday, lateToday, totalStudents int
 		err = db.QueryRow(`
-			SELECT COALESCE(SUM(present), 0), 
-			       COALESCE(SUM(late), 0),
-			       COUNT(*) 
+			SELECT 
+				COUNT(CASE WHEN today = 'Present' THEN 1 END),
+				COUNT(CASE WHEN today = 'Late' THEN 1 END),
+				COUNT(*)
 			FROM attendance 
 			WHERE year = $1 AND group_name = $2
-		`, group.Year, group.Section).Scan(&totalPresent, &totalLate, &totalCount)
+		`, group.Year, group.Section).Scan(&presentToday, &lateToday, &totalStudents)
 
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -164,28 +165,21 @@ func GetYearGroups(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Calculate attendance percentage - include both present and late students
+		// Calculate attendance percentage correctly based on today's status
 		var attendancePercentage string
-		if totalCount > 0 {
-			// Late students still count as attending, so include them in the percentage
-			attendanceCount := totalPresent + totalLate
-			totalClasses := attendanceCount // This is actually the total days attended
-
-			// If no classes have been recorded yet, use the student count as divisor
-			if totalClasses == 0 {
-				attendancePercentage = "0%"
-				fmt.Printf("[DEBUG] Year Group %s %s: Attendance Percentage = 0%% (No classes recorded)\n",
-					group.Year, group.Section)
-			} else {
-				// Calculate the percentage based on present + late students
-				percentage := float64(attendanceCount) / float64(totalCount) * 100
-				attendancePercentage = fmt.Sprintf("%.1f%%", percentage)
-				fmt.Printf("[DEBUG] Year Group %s %s: Present=%d, Late=%d, Total=%d, Attendance=%.1f%%\n",
-					group.Year, group.Section, totalPresent, totalLate, totalCount, percentage)
-			}
+		if totalStudents > 0 {
+			// Students who are present or late today both count as "attending"
+			attendingToday := presentToday + lateToday
+			
+			// Calculate percentage - this should never exceed 100%
+			percentage := float64(attendingToday) / float64(totalStudents) * 100
+			attendancePercentage = fmt.Sprintf("%.1f%%", percentage)
+			
+			fmt.Printf("[DEBUG] Year Group %s %s: PresentToday=%d, LateToday=%d, TotalStudents=%d, Attendance=%.1f%%\n", 
+				group.Year, group.Section, presentToday, lateToday, totalStudents, percentage)
 		} else {
 			attendancePercentage = "0%"
-			fmt.Printf("[DEBUG] Year Group %s %s: Attendance Percentage = 0%% (No students)\n",
+			fmt.Printf("[DEBUG] Year Group %s %s: Attendance Percentage = 0%% (No students)\n", 
 				group.Year, group.Section)
 		}
 
@@ -1217,20 +1211,21 @@ func GetStudentAttendance(c *gin.Context, db *sql.DB) {
 
 	fmt.Printf("Successfully retrieved attendance record for student: %s (ID: %d)\n", record.Name, record.UserID)
 
-	// Calculate attendance statistics
-	totalClasses := record.Present + record.Absent + record.Late + record.Medical + record.Early
+	// Calculate attendance statistics based on the historical counters
+	// These accumulated counters are more reliable for historical attendance calculation
+	totalDays := record.Present + record.Absent + record.Late + record.Medical + record.Early
 	var attendancePercentage float64
-	if totalClasses > 0 {
-		// Late students still count as attending, so include them in the percentage
-		attendanceCount := record.Present + record.Late
-		attendancePercentage = float64(attendanceCount) / float64(totalClasses) * 100
-
+	if totalDays > 0 {
+		// Calculate the percentage of days the student was present or late (both count as attending)
+		attendedDays := record.Present + record.Late
+		attendancePercentage = float64(attendedDays) / float64(totalDays) * 100
+		
 		// Add debug logging
-		fmt.Printf("[DEBUG] Student %s (ID=%d): Present=%d, Late=%d, Absent=%d, Medical=%d, Early=%d, Total=%d, Attendance=%.1f%%\n",
-			record.Name, record.UserID, record.Present, record.Late, record.Absent, record.Medical, record.Early, totalClasses, attendancePercentage)
+		fmt.Printf("[DEBUG] Student %s (ID=%d): Historical attendance - Present=%d, Late=%d, Total=%d, Attendance=%.1f%%\n",
+			record.Name, record.UserID, record.Present, record.Late, totalDays, attendancePercentage)
 	} else {
 		// Add debug logging
-		fmt.Printf("[DEBUG] Student %s (ID=%d): No attendance data (Total=0)\n", record.Name, record.UserID)
+		fmt.Printf("[DEBUG] Student %s (ID=%d): No historical attendance data\n", record.Name, record.UserID)
 	}
 
 	response := gin.H{
@@ -1247,7 +1242,7 @@ func GetStudentAttendance(c *gin.Context, db *sql.DB) {
 				"late":       record.Late,
 				"medical":    record.Medical,
 				"early":      record.Early,
-				"total":      totalClasses,
+				"total":      totalDays,
 				"percentage": fmt.Sprintf("%.1f%%", attendancePercentage),
 			},
 		},
