@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
+	"os"
 	"server/config"        // Your configuration package.
 	"server/notifications" // Import the notifications package
 	"server/routes"        // Adjust the import path based on your module.
@@ -33,7 +35,67 @@ func CacheMiddleware() gin.HandlerFunc {
 	}
 }
 
+// promptForServerStatus asks the user to select the server status interactively
+func promptForServerStatus() {
+	fmt.Println("🚀 HSANNU Server Configuration")
+	fmt.Println("==============================")
+	fmt.Println()
+	fmt.Println("Please select the server status:")
+	fmt.Println("  (a) Active - Server is running normally")
+	fmt.Println("  (m) Maintenance - Server is under maintenance")
+	fmt.Println("  (c) Construction - Server is under construction")
+	fmt.Println()
+	fmt.Print("Enter your choice [a/m/c] (default: a): ")
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	// Set status based on user input
+	switch input {
+	case "a", "active", "":
+		config.ServerStatus = "active"
+		config.StatusMessage = "Server is running normally"
+		fmt.Println("✅ Server status set to: ACTIVE")
+	case "m", "maintenance":
+		config.ServerStatus = "maintenance"
+		config.StatusMessage = "Server is under maintenance. Please try again later."
+		fmt.Println("🔧 Server status set to: MAINTENANCE")
+
+		// Ask for custom maintenance message
+		fmt.Print("Enter custom maintenance message (optional): ")
+		customMessage, _ := reader.ReadString('\n')
+		customMessage = strings.TrimSpace(customMessage)
+		if customMessage != "" {
+			config.StatusMessage = customMessage
+		}
+	case "c", "construction":
+		config.ServerStatus = "construction"
+		config.StatusMessage = "Server is under construction. New features are being added."
+		fmt.Println("🚧 Server status set to: CONSTRUCTION")
+
+		// Ask for custom construction message
+		fmt.Print("Enter custom construction message (optional): ")
+		customMessage, _ := reader.ReadString('\n')
+		customMessage = strings.TrimSpace(customMessage)
+		if customMessage != "" {
+			config.StatusMessage = customMessage
+		}
+	default:
+		fmt.Printf("❌ Invalid choice '%s'. Defaulting to ACTIVE.\n", input)
+		config.ServerStatus = "active"
+		config.StatusMessage = "Server is running normally"
+	}
+
+	fmt.Println()
+	fmt.Printf("📝 Status Message: %s\n", config.StatusMessage)
+	fmt.Println()
+}
+
 func main() {
+	// Prompt for server status configuration
+	promptForServerStatus()
+
 	// Set Gin to production mode
 	gin.SetMode(gin.ReleaseMode)
 
@@ -131,6 +193,8 @@ func main() {
 
 	// Start the server on port 2000.
 	log.Printf("Starting server on port %s...", config.ServerPort)
+	log.Printf("Server Status: %s", config.ServerStatus)
+	log.Printf("Status Message: %s", config.StatusMessage)
 	log.Printf("IS IT RUNNING?")
 	if err := router.Run(fmt.Sprintf(":%s", config.ServerPort)); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
