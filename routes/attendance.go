@@ -484,9 +484,12 @@ func getCounterField(status string) string {
 }
 
 // Helper function to validate and normalize attendance status
-func validateAndNormalizeStatus(status string) (bool, string, string) {
+func validateAndNormalizeStatus(status string) (bool, string, string, bool) {
 	// Convert to uppercase for validation
 	upperStatus := strings.ToUpper(status)
+
+	// Track if this is a special "Late_Arrived" status
+	isLateArrived := upperStatus == "LATE_ARRIVED"
 
 	// Check if it's a valid status or the special Late_Arrived status
 	isValid := upperStatus == "" ||
@@ -536,7 +539,7 @@ func validateAndNormalizeStatus(status string) (bool, string, string) {
 		lowerCaseStatus = strings.ToLower(status)
 	}
 
-	return isValid, properCaseStatus, lowerCaseStatus
+	return isValid, properCaseStatus, lowerCaseStatus, isLateArrived
 }
 
 // UpdateAttendance updates the attendance status for students in DB
@@ -647,7 +650,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 		}
 
 		// Validate and normalize the status
-		isValid, properCaseStatus, lowerCaseStatus := validateAndNormalizeStatus(student.Status)
+		isValid, properCaseStatus, lowerCaseStatus, isLateArrived := validateAndNormalizeStatus(student.Status)
 
 		if !isValid {
 			// Invalid status provided
@@ -659,7 +662,11 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Update the today field - always set "Pending" for empty values, never NULL
+		// Print detailed debug information
+		fmt.Printf("Processing attendance update: UserID=%d, RawStatus=%s, NormalizedStatus=%s, IsLateArrived=%v\n",
+			student.UserID, student.Status, lowerCaseStatus, isLateArrived)
+
+		// Update the today field in the attendance table
 		result, err := tx.Exec(`
 			UPDATE attendance 
 			SET today = $1
@@ -684,22 +691,6 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 
 		// Only insert into attendance_history if status is not empty or "Pending"
 		if lowerCaseStatus != "" && lowerCaseStatus != "pending" {
-			// For late students, we need to set the arrived_at time in UTC only if explicitly marked as arrived
-			var arrivedAt interface{}
-
-			// Check if this is a special Late_Arrived status (manually marked as arrived)
-			isLateArrived := strings.ToUpper(student.Status) == "LATE_ARRIVED"
-
-			// The database has a constraint that only allows arrived_at to be set when status is "late"
-			if lowerCaseStatus == "late" && isLateArrived {
-				// Only set arrived_at time for Late_Arrived status (manual marking)
-				arrivedAt = time.Now().UTC().Format("15:04:05") // Current UTC time in HH:MM:SS format
-				fmt.Printf("Setting arrival time for user ID %d to %v\n", student.UserID, arrivedAt)
-			} else {
-				// For all other statuses, including regular "late" status (auto-marking at 7:40), leave as NULL
-				arrivedAt = nil
-			}
-
 			// Check if an entry already exists for this student on this date
 			var existingId int
 			err = tx.QueryRow(`
@@ -719,11 +710,99 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 
 			if err == sql.ErrNoRows {
 				// No existing entry, insert a new one
-				_, err = tx.Exec(`
-					INSERT INTO attendance_history 
-					(student_id, status, attendance_date, arrived_at, created_at)
-					VALUES ($1, $2, $3, $4, $5)
-				`, student.UserID, lowerCaseStatus, attendanceDate.Format("2006-01-02"), arrivedAt, time.Now().UTC())
+				var err error
+
+				if lowerCaseStatus == "late" && isLateArrived {
+					// Try a direct update bypassing potential constraints with verbose error logging
+					arrivedTime := time.Now().UTC().Format("15:04:05")
+					fmt.Printf("ATTEMPTING DIRECT ARRIVAL TIME UPDATE: UserID=%d, Time=%s\n", student.UserID, arrivedTime)
+
+					// First, try to just update without constraints using a direct SQL query
+					directSQL := `
+						UPDATE attendance_history 
+						SET arrived_at = $1
+						WHERE student_id = $2 AND attendance_date = $3
+					`
+					_, err = tx.Exec(directSQL, arrivedTime, student.UserID, attendanceDate.Format("2006-01-02"))
+
+					if err != nil {
+						// Try to determine the exact constraint that's failing
+						fmt.Printf("DIRECT UPDATE FAILED: %v\n", err)
+
+						// Let's try to inspect the constraint
+						var constraintName string
+						err = tx.QueryRow(`
+							SELECT constraint_name 
+							FROM information_schema.table_constraints 
+							WHERE table_name = 'attendance_history' 
+							AND constraint_type = 'CHECK'
+						`).Scan(&constraintName)
+
+						if err == nil {
+							fmt.Printf("CONSTRAINT NAME: %s\n", constraintName)
+
+							// Try to get the constraint definition
+							var constraintDef string
+							err = tx.QueryRow(`
+								SELECT pg_get_constraintdef(oid) 
+								FROM pg_constraint 
+								WHERE conname = $1
+							`, constraintName).Scan(&constraintDef)
+
+							if err == nil {
+								fmt.Printf("CONSTRAINT DEFINITION: %s\n", constraintDef)
+							} else {
+								fmt.Printf("FAILED TO GET CONSTRAINT DEFINITION: %v\n", err)
+							}
+						} else {
+							fmt.Printf("FAILED TO GET CONSTRAINT NAME: %v\n", err)
+						}
+
+						// Let's try a more aggressive approach - first make sure the status is 'late'
+						_, err = tx.Exec(`
+							UPDATE attendance_history 
+							SET status = 'late'
+							WHERE student_id = $1 AND attendance_date = $2
+						`, student.UserID, attendanceDate.Format("2006-01-02"))
+
+						if err != nil {
+							fmt.Printf("FAILED TO UPDATE STATUS TO LATE: %v\n", err)
+						} else {
+							// Now try to set the arrived_at field
+							_, err = tx.Exec(`
+								UPDATE attendance_history 
+								SET arrived_at = $1
+								WHERE student_id = $2 AND attendance_date = $3
+							`, arrivedTime, student.UserID, attendanceDate.Format("2006-01-02"))
+
+							if err != nil {
+								fmt.Printf("FAILED TO UPDATE ARRIVED_AT AFTER STATUS SET: %v\n", err)
+							} else {
+								fmt.Printf("SUCCESS! DIRECT ARRIVAL TIME UPDATE WORKED AFTER STATUS SET\n")
+							}
+						}
+					} else {
+						fmt.Printf("SUCCESS! DIRECT ARRIVAL TIME UPDATE WORKED\n")
+					}
+				} else if lowerCaseStatus == "late" {
+					// Regular late student (auto-marked) - don't set arrived_at
+					fmt.Printf("Auto-marked late student - NOT setting arrival time\n")
+
+					_, err = tx.Exec(`
+						INSERT INTO attendance_history 
+						(student_id, status, attendance_date, arrived_at, created_at)
+						VALUES ($1, $2, $3, NULL, $4)
+					`, student.UserID, lowerCaseStatus, attendanceDate.Format("2006-01-02"), time.Now().UTC())
+				} else {
+					// Any other status - don't set arrived_at
+					fmt.Printf("Non-late status - NOT setting arrival time\n")
+
+					_, err = tx.Exec(`
+						INSERT INTO attendance_history 
+						(student_id, status, attendance_date, arrived_at, created_at)
+						VALUES ($1, $2, $3, NULL, $4)
+					`, student.UserID, lowerCaseStatus, attendanceDate.Format("2006-01-02"), time.Now().UTC())
+				}
 
 				if err != nil {
 					tx.Rollback()
@@ -757,10 +836,11 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 			} else {
 				// Entry exists, get the old status before updating
 				var oldStatus string
+				var oldArrivedAt sql.NullString
 				err = tx.QueryRow(`
-					SELECT status FROM attendance_history 
+					SELECT status, arrived_at FROM attendance_history 
 					WHERE id = $1
-				`, existingId).Scan(&oldStatus)
+				`, existingId).Scan(&oldStatus, &oldArrivedAt)
 
 				if err != nil {
 					tx.Rollback()
@@ -772,30 +852,44 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 					return
 				}
 
-				// Update the record with the new status
-				// Be extra careful about the arrived_at field due to the database constraint
-				var updateQuery string
-				var updateArgs []interface{}
+				fmt.Printf("Existing record found - OldStatus: %s, HasArrivalTime: %v\n",
+					oldStatus, oldArrivedAt.Valid)
 
-				if lowerCaseStatus == "late" {
-					// For "late" status, we might set arrived_at
-					updateQuery = `
+				// Update based on status and whether this is a manual arrival
+				var err error
+
+				if lowerCaseStatus == "late" && isLateArrived {
+					// Student is late and teacher is marking arrival
+					arrivedTime := time.Now().UTC().Format("15:04:05")
+					fmt.Printf("Setting arrival time for existing late student: %s\n", arrivedTime)
+
+					// Update with arrival time
+					_, err = tx.Exec(`
 						UPDATE attendance_history 
 						SET status = $1, arrived_at = $2
 						WHERE id = $3
-					`
-					updateArgs = []interface{}{lowerCaseStatus, arrivedAt, existingId}
+					`, lowerCaseStatus, arrivedTime, existingId)
+				} else if lowerCaseStatus == "late" {
+					// Regular late status update - keep existing arrived_at value if any
+					fmt.Printf("Updating to late status but not marking arrival - keeping existing arrived_at\n")
+
+					// Only update the status, don't touch arrived_at
+					_, err = tx.Exec(`
+						UPDATE attendance_history 
+						SET status = $1
+						WHERE id = $2
+					`, lowerCaseStatus, existingId)
 				} else {
-					// For non-late statuses, don't try to set arrived_at to avoid violating the constraint
-					updateQuery = `
+					// Non-late status - set arrived_at to NULL
+					fmt.Printf("Updating to non-late status - setting arrived_at to NULL\n")
+
+					// Set arrived_at to NULL for non-late statuses
+					_, err = tx.Exec(`
 						UPDATE attendance_history 
 						SET status = $1, arrived_at = NULL
 						WHERE id = $2
-					`
-					updateArgs = []interface{}{lowerCaseStatus, existingId}
+					`, lowerCaseStatus, existingId)
 				}
-
-				_, err = tx.Exec(updateQuery, updateArgs...)
 
 				if err != nil {
 					tx.Rollback()
@@ -846,6 +940,38 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 								"message": fmt.Sprintf("Error incrementing %s counter for user ID %d: %v", newCounterField, student.UserID, err),
 							})
 							return
+						}
+					}
+				}
+
+				// Add the same direct approach for existing records
+				if existingId > 0 && lowerCaseStatus == "late" && isLateArrived {
+					// Try a direct update bypassing potential constraints with verbose error logging
+					arrivedTime := time.Now().UTC().Format("15:04:05")
+					fmt.Printf("ATTEMPTING DIRECT ARRIVAL TIME UPDATE FOR EXISTING RECORD: ID=%d, UserID=%d, Time=%s\n",
+						existingId, student.UserID, arrivedTime)
+
+					// First, make sure the status is set to 'late'
+					_, err = tx.Exec(`
+						UPDATE attendance_history 
+						SET status = 'late'
+						WHERE id = $1
+					`, existingId)
+
+					if err != nil {
+						fmt.Printf("FAILED TO UPDATE STATUS TO LATE: %v\n", err)
+					} else {
+						// Now try to set the arrived_at field
+						_, err = tx.Exec(`
+							UPDATE attendance_history 
+							SET arrived_at = $1
+							WHERE id = $2
+						`, arrivedTime, existingId)
+
+						if err != nil {
+							fmt.Printf("FAILED TO UPDATE ARRIVED_AT AFTER STATUS SET: %v\n", err)
+						} else {
+							fmt.Printf("SUCCESS! DIRECT ARRIVAL TIME UPDATE WORKED FOR EXISTING RECORD\n")
 						}
 					}
 				}
