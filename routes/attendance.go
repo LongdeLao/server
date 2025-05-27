@@ -302,6 +302,242 @@ func GetStudentsByYearGroup(c *gin.Context, db *sql.DB) {
 	})
 }
 
+// GetStudentAttendanceHistory retrieves all attendance records for a specific student
+//
+// Endpoint: GET /api/attendance/history/:id
+//
+// Parameters:
+//   - id: The student's user ID (integer)
+//
+// Returns:
+//   - 200 OK: Successfully retrieved attendance history records
+//     {
+//     "success": true,
+//     "records": [
+//     {
+//     "id": int,
+//     "student_id": int,
+//     "status": string,        // "present", "absent", "late", "medical", or "early"
+//     "attendance_date": string, // YYYY-MM-DD format
+//     "arrived_at": string,    // HH:MM:SS format, null for non-late status
+//     "created_at": string     // timestamp
+//     }
+//     ]
+//     }
+//   - 400 Bad Request: Invalid student ID format
+//   - 404 Not Found: No attendance records found for the student
+//   - 500 Internal Server Error: Database error
+func GetStudentAttendanceHistory(c *gin.Context, db *sql.DB) {
+	studentIDStr := c.Param("id")
+	fmt.Printf("Received request for student attendance history, ID: %s\n", studentIDStr)
+
+	if studentIDStr == "" {
+		fmt.Println("Error: Student ID is empty")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Student ID is required",
+		})
+		return
+	}
+
+	// Convert student ID from string to integer
+	studentID, err := strconv.Atoi(studentIDStr)
+	if err != nil {
+		fmt.Printf("Error converting student ID to integer: %v\n", err)
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Invalid student ID format: %s", studentIDStr),
+		})
+		return
+	}
+
+	// First, check if the student exists
+	var exists bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", studentID).Scan(&exists)
+	if err != nil {
+		fmt.Printf("Error checking if student exists: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error checking if student exists: %v", err),
+		})
+		return
+	}
+
+	if !exists {
+		fmt.Printf("Student not found with ID: %d\n", studentID)
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Student not found with ID: %d", studentID),
+		})
+		return
+	}
+
+	// Query to get attendance history records for the student
+	query := `
+		SELECT 
+			id,
+			student_id,
+			status,
+			attendance_date,
+			arrived_at,
+			created_at
+		FROM attendance_history 
+		WHERE student_id = $1
+		ORDER BY attendance_date DESC
+	`
+
+	rows, err := db.Query(query, studentID)
+	if err != nil {
+		fmt.Printf("Error querying attendance history: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error querying attendance history: %v", err),
+		})
+		return
+	}
+	defer rows.Close()
+
+	var records []gin.H
+	for rows.Next() {
+		var id, studentID int
+		var status string
+		var attendanceDate time.Time
+		var arrivedAt sql.NullTime
+		var createdAt time.Time
+
+		err := rows.Scan(
+			&id,
+			&studentID,
+			&status,
+			&attendanceDate,
+			&arrivedAt,
+			&createdAt,
+		)
+
+		if err != nil {
+			fmt.Printf("Error scanning attendance record: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Error scanning attendance record: %v", err),
+			})
+			return
+		}
+
+		record := gin.H{
+			"id":              id,
+			"student_id":      studentID,
+			"status":          status,
+			"attendance_date": attendanceDate.Format("2006-01-02"),
+			"created_at":      createdAt.Format(time.RFC3339),
+		}
+
+		if arrivedAt.Valid {
+			record["arrived_at"] = arrivedAt.Time.Format("15:04:05")
+		} else {
+			record["arrived_at"] = nil
+		}
+
+		records = append(records, record)
+	}
+
+	if err = rows.Err(); err != nil {
+		fmt.Printf("Error iterating through records: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error iterating through records: %v", err),
+		})
+		return
+	}
+
+	// If no records found
+	if len(records) == 0 {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"records": []gin.H{},
+			"message": "No attendance history records found for this student",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"records": records,
+	})
+}
+
+// Helper function to map status to counter field name
+func getCounterField(status string) string {
+	switch status {
+	case "present":
+		return "present"
+	case "absent":
+		return "absent"
+	case "late":
+		return "late"
+	case "medical":
+		return "medical"
+	case "early":
+		return "early"
+	default:
+		return ""
+	}
+}
+
+// Helper function to validate and normalize attendance status
+func validateAndNormalizeStatus(status string) (bool, string, string) {
+	// Convert to uppercase for validation
+	upperStatus := strings.ToUpper(status)
+
+	// Check if it's a valid status
+	isValid := upperStatus == "" ||
+		upperStatus == "PRESENT" ||
+		upperStatus == "ABSENT" ||
+		upperStatus == "LATE" ||
+		upperStatus == "MEDICAL" ||
+		upperStatus == "EARLY" ||
+		upperStatus == "PENDING"
+
+	// Get properly cased status for the attendance table
+	var properCaseStatus string
+	switch upperStatus {
+	case "PRESENT":
+		properCaseStatus = "Present"
+	case "ABSENT":
+		properCaseStatus = "Absent"
+	case "LATE":
+		properCaseStatus = "Late"
+	case "MEDICAL":
+		properCaseStatus = "Medical"
+	case "EARLY":
+		properCaseStatus = "Early"
+	case "PENDING", "":
+		properCaseStatus = "Pending"
+	default:
+		properCaseStatus = status
+	}
+
+	// Get lowercase status for attendance_history table
+	var lowerCaseStatus string
+	switch upperStatus {
+	case "PRESENT":
+		lowerCaseStatus = "present"
+	case "ABSENT":
+		lowerCaseStatus = "absent"
+	case "LATE":
+		lowerCaseStatus = "late"
+	case "MEDICAL":
+		lowerCaseStatus = "medical"
+	case "EARLY":
+		lowerCaseStatus = "early"
+	case "PENDING", "":
+		lowerCaseStatus = "pending"
+	default:
+		lowerCaseStatus = strings.ToLower(status)
+	}
+
+	return isValid, properCaseStatus, lowerCaseStatus
+}
+
 // UpdateAttendance updates the attendance status for students in DB
 //
 // Endpoint: POST /api/attendance/update
@@ -336,24 +572,6 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 			UserID int    `json:"user_id"`
 			Status string `json:"status"`
 		} `json:"students"`
-	}
-
-	// Helper function to map status to counter field name
-	getCounterField := func(status string) string {
-		switch status {
-		case "present":
-			return "present"
-		case "absent":
-			return "absent"
-		case "late":
-			return "late"
-		case "medical":
-			return "medical"
-		case "early":
-			return "early"
-		default:
-			return ""
-		}
 	}
 
 	// Read the raw body first for debugging
@@ -392,7 +610,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 	}
 
 	// Parse the attendance date from the request or use today's date
-	attendanceDate := time.Now()
+	attendanceDate := time.Now().UTC()
 	if request.Date != "" {
 		parsedDate, err := time.Parse("2006-01-02", request.Date)
 		if err != nil {
@@ -427,14 +645,10 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Validate the status - allow empty status or "Pending" for resetting
-		if student.Status != "" &&
-			student.Status != "Present" &&
-			student.Status != "Absent" &&
-			student.Status != "Late" &&
-			student.Status != "Medical" &&
-			student.Status != "Early" &&
-			student.Status != "Pending" {
+		// Validate and normalize the status
+		isValid, properCaseStatus, lowerCaseStatus := validateAndNormalizeStatus(student.Status)
+
+		if !isValid {
 			// Invalid status provided
 			tx.Rollback()
 			c.JSON(http.StatusBadRequest, gin.H{
@@ -447,9 +661,9 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 		// Update the today field - always set "Pending" for empty values, never NULL
 		result, err := tx.Exec(`
 			UPDATE attendance 
-			SET today = CASE WHEN $1 = '' OR $1 = 'Pending' THEN 'Pending' ELSE $1 END
+			SET today = $1
 			WHERE user_id = $2
-		`, student.Status, student.UserID)
+		`, properCaseStatus, student.UserID)
 
 		if err != nil {
 			tx.Rollback()
@@ -468,14 +682,11 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 		}
 
 		// Only insert into attendance_history if status is not empty or "Pending"
-		if student.Status != "" && student.Status != "Pending" {
-			// Convert status to lowercase for attendance_history table
-			statusLower := strings.ToLower(student.Status)
-
-			// For late students, we need to set the arrived_at time
+		if lowerCaseStatus != "" && lowerCaseStatus != "pending" {
+			// For late students, we need to set the arrived_at time in UTC
 			var arrivedAt interface{}
-			if statusLower == "late" {
-				arrivedAt = time.Now().Format("15:04:05") // Current time in HH:MM:SS format
+			if lowerCaseStatus == "late" {
+				arrivedAt = time.Now().UTC().Format("15:04:05") // Current UTC time in HH:MM:SS format
 			} else {
 				arrivedAt = nil // NULL for non-late status
 			}
@@ -501,9 +712,9 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 				// No existing entry, insert a new one
 				_, err = tx.Exec(`
 					INSERT INTO attendance_history 
-					(student_id, status, attendance_date, arrived_at)
-					VALUES ($1, $2, $3, $4)
-				`, student.UserID, statusLower, attendanceDate.Format("2006-01-02"), arrivedAt)
+					(student_id, status, attendance_date, arrived_at, created_at)
+					VALUES ($1, $2, $3, $4, $5)
+				`, student.UserID, lowerCaseStatus, attendanceDate.Format("2006-01-02"), arrivedAt, time.Now().UTC())
 
 				if err != nil {
 					tx.Rollback()
@@ -516,7 +727,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 				}
 
 				// Increment the corresponding counter in the attendance table for new entries
-				counterField := getCounterField(statusLower)
+				counterField := getCounterField(lowerCaseStatus)
 				if counterField != "" {
 					_, err = tx.Exec(fmt.Sprintf(`
 						UPDATE attendance 
@@ -557,7 +768,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 					UPDATE attendance_history 
 					SET status = $1, arrived_at = $2
 					WHERE id = $3
-				`, statusLower, arrivedAt, existingId)
+				`, lowerCaseStatus, arrivedAt, existingId)
 
 				if err != nil {
 					tx.Rollback()
@@ -570,7 +781,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 				}
 
 				// If the status has changed, update the counters in the attendance table
-				if oldStatus != statusLower {
+				if oldStatus != lowerCaseStatus {
 					// Decrement the old status counter
 					oldCounterField := getCounterField(oldStatus)
 					if oldCounterField != "" {
@@ -592,7 +803,7 @@ func UpdateAttendance(c *gin.Context, db *sql.DB) {
 					}
 
 					// Increment the new status counter
-					newCounterField := getCounterField(statusLower)
+					newCounterField := getCounterField(lowerCaseStatus)
 					if newCounterField != "" {
 						_, err = tx.Exec(fmt.Sprintf(`
 							UPDATE attendance 
@@ -907,169 +1118,6 @@ func GetAllAttendance(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    records,
-	})
-}
-
-// GetStudentAttendanceHistory retrieves all attendance records for a specific student
-//
-// Endpoint: GET /api/attendance/history/:id
-//
-// Parameters:
-//   - id: The student's user ID (integer)
-//
-// Returns:
-//   - 200 OK: Successfully retrieved attendance history records
-//     {
-//     "success": true,
-//     "records": [
-//     {
-//     "id": int,
-//     "student_id": int,
-//     "status": string,        // "present", "absent", "late", "medical", or "early"
-//     "attendance_date": string, // YYYY-MM-DD format
-//     "arrived_at": string,    // HH:MM:SS format, null for non-late status
-//     "created_at": string     // timestamp
-//     }
-//     ]
-//     }
-//   - 400 Bad Request: Invalid student ID format
-//   - 404 Not Found: No attendance records found for the student
-//   - 500 Internal Server Error: Database error
-func GetStudentAttendanceHistory(c *gin.Context, db *sql.DB) {
-	studentIDStr := c.Param("id")
-	fmt.Printf("Received request for student attendance history, ID: %s\n", studentIDStr)
-
-	if studentIDStr == "" {
-		fmt.Println("Error: Student ID is empty")
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Student ID is required",
-		})
-		return
-	}
-
-	// Convert student ID from string to integer
-	studentID, err := strconv.Atoi(studentIDStr)
-	if err != nil {
-		fmt.Printf("Error converting student ID to integer: %v\n", err)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Invalid student ID format: %s", studentIDStr),
-		})
-		return
-	}
-
-	// First, check if the student exists
-	var exists bool
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", studentID).Scan(&exists)
-	if err != nil {
-		fmt.Printf("Error checking if student exists: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Error checking if student exists: %v", err),
-		})
-		return
-	}
-
-	if !exists {
-		fmt.Printf("Student not found with ID: %d\n", studentID)
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Student not found with ID: %d", studentID),
-		})
-		return
-	}
-
-	// Query to get attendance history records for the student
-	query := `
-		SELECT 
-			id,
-			student_id,
-			status,
-			attendance_date,
-			arrived_at,
-			created_at
-		FROM attendance_history 
-		WHERE student_id = $1
-		ORDER BY attendance_date DESC
-	`
-
-	rows, err := db.Query(query, studentID)
-	if err != nil {
-		fmt.Printf("Error querying attendance history: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Error querying attendance history: %v", err),
-		})
-		return
-	}
-	defer rows.Close()
-
-	var records []gin.H
-	for rows.Next() {
-		var id, studentID int
-		var status string
-		var attendanceDate time.Time
-		var arrivedAt sql.NullTime
-		var createdAt time.Time
-
-		err := rows.Scan(
-			&id,
-			&studentID,
-			&status,
-			&attendanceDate,
-			&arrivedAt,
-			&createdAt,
-		)
-
-		if err != nil {
-			fmt.Printf("Error scanning attendance record: %v\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"message": fmt.Sprintf("Error scanning attendance record: %v", err),
-			})
-			return
-		}
-
-		record := gin.H{
-			"id":              id,
-			"student_id":      studentID,
-			"status":          status,
-			"attendance_date": attendanceDate.Format("2006-01-02"),
-			"created_at":      createdAt.Format(time.RFC3339),
-		}
-
-		if arrivedAt.Valid {
-			record["arrived_at"] = arrivedAt.Time.Format("15:04:05")
-		} else {
-			record["arrived_at"] = nil
-		}
-
-		records = append(records, record)
-	}
-
-	if err = rows.Err(); err != nil {
-		fmt.Printf("Error iterating through records: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": fmt.Sprintf("Error iterating through records: %v", err),
-		})
-		return
-	}
-
-	// If no records found
-	if len(records) == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"records": []gin.H{},
-			"message": "No attendance history records found for this student",
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"records": records,
 	})
 }
 
