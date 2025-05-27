@@ -7,7 +7,7 @@
 if [ -z "$1" ]; then
     # Try to detect if we're running in production or locally
     if ping -c 1 connect.hsannu.com &>/dev/null; then
-        SERVER_URL="http://connect.hsannu.com"
+        SERVER_URL="https://connect.hsannu.com"
         echo "No server URL provided, using production server: $SERVER_URL"
     else
         SERVER_URL="http://localhost:2000"

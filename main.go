@@ -285,6 +285,99 @@ func main() {
 	// Register credits routes
 	routes.SetupCreditsRoutes(apiRouter, db)
 
+	// Register auto-mark test and settings routes directly in the apiRouter
+	// (Don't rely on the separate function that might not be properly registered)
+	apiRouter.GET("/settings/auto-mark", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"success": true,
+			"settings": gin.H{
+				"hour":    config.AutoMarkHour,
+				"minute":  config.AutoMarkMinute,
+				"enabled": config.AutoMarkEnabled,
+			},
+		})
+	})
+
+	apiRouter.POST("/settings/auto-mark", func(c *gin.Context) {
+		var request struct {
+			Hour    *int  `json:"hour"`
+			Minute  *int  `json:"minute"`
+			Enabled *bool `json:"enabled"`
+		}
+
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request format",
+			})
+			return
+		}
+
+		// Update the configuration if values are provided
+		if request.Hour != nil && *request.Hour >= 0 && *request.Hour < 24 {
+			config.AutoMarkHour = *request.Hour
+		}
+
+		if request.Minute != nil && *request.Minute >= 0 && *request.Minute < 60 {
+			config.AutoMarkMinute = *request.Minute
+		}
+
+		if request.Enabled != nil {
+			config.AutoMarkEnabled = *request.Enabled
+		}
+
+		// Force auto-marking to run on next check if requested
+		if c.Query("run_now") == "true" {
+			config.ForceAutoMark = true
+		}
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"message": "Auto-marking settings updated successfully",
+			"settings": gin.H{
+				"hour":    config.AutoMarkHour,
+				"minute":  config.AutoMarkMinute,
+				"enabled": config.AutoMarkEnabled,
+			},
+		})
+	})
+
+	apiRouter.GET("/test/auto-mark", func(c *gin.Context) {
+		// Get the time parameter if provided
+		timeStr := c.Query("time")
+		var targetTime *time.Time
+
+		if timeStr != "" {
+			// Try to parse the time string (format: HH:MM)
+			parts := strings.Split(timeStr, ":")
+			if len(parts) == 2 {
+				hour, errH := strconv.Atoi(parts[0])
+				min, errM := strconv.Atoi(parts[1])
+				if errH == nil && errM == nil && hour >= 0 && hour < 24 && min >= 0 && min < 60 {
+					now := time.Now().UTC()
+					t := time.Date(now.Year(), now.Month(), now.Day(), hour, min, 0, 0, time.UTC)
+					targetTime = &t
+				}
+			}
+		}
+
+		// Run the auto-marking function
+		go func() {
+			if targetTime != nil {
+				log.Printf("Running auto-marking test with time: %s (UTC)", targetTime.Format(time.RFC3339))
+				routes.AutoMarkLateStudents(db, targetTime)
+			} else {
+				log.Printf("Running auto-marking test with current time")
+				routes.AutoMarkLateStudents(db, nil)
+			}
+		}()
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"message": "Auto-marking test triggered successfully",
+		})
+	})
+
 	// Add a test route to trigger auto-marking immediately
 	registerTestAutoMarkRoute(apiRouter, db)
 
