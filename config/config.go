@@ -29,6 +29,12 @@ const (
 // Server configuration
 const ServerPort = "2000"
 
+// Server status configuration
+const (
+	ServerStatus  = "active" // Options: "active", "maintenance", "construction"
+	StatusMessage = "Server is running normally"
+)
+
 // AI Assistant configuration
 const (
 	AIAPIKey          = "sk-96744d1c86d149dcb3f906b8fcbcd210"

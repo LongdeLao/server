@@ -113,6 +113,9 @@ func main() {
 	// Register AI configuration routes
 	routes.RegisterAIConfigRoutes(apiRouter)
 
+	// Register server status route
+	routes.RegisterStatusRoute(apiRouter)
+
 	// Print local non-loopback IPv4 addresses.
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
