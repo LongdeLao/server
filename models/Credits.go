@@ -192,11 +192,13 @@ func AddUserCredits(db *sql.DB, userID int, amount int) (*UserCredits, error) {
 }
 
 // GetAllUserCredits retrieves all users' credit information (admin function)
-func GetAllUserCredits(db *sql.DB) ([]UserCredits, error) {
+func GetAllUserCredits(db *sql.DB) ([]map[string]interface{}, error) {
 	query := `
-		SELECT uc.id, uc.user_id, uc.credits, uc.created_at, uc.updated_at
+		SELECT uc.id, uc.user_id, uc.credits, uc.created_at, uc.updated_at,
+		       u.name, u.role
 		FROM user_credits uc
-		ORDER BY uc.user_id
+		JOIN users u ON uc.user_id = u.id
+		ORDER BY u.name
 	`
 
 	rows, err := db.Query(query)
@@ -205,20 +207,39 @@ func GetAllUserCredits(db *sql.DB) ([]UserCredits, error) {
 	}
 	defer rows.Close()
 
-	var allCredits []UserCredits
+	var allCredits []map[string]interface{}
 	for rows.Next() {
-		var credits UserCredits
+		var id, userID, credits int
+		var createdAt, updatedAt time.Time
+		var name, role string
+
 		err := rows.Scan(
-			&credits.ID,
-			&credits.UserID,
-			&credits.Credits,
-			&credits.CreatedAt,
-			&credits.UpdatedAt,
+			&id,
+			&userID,
+			&credits,
+			&createdAt,
+			&updatedAt,
+			&name,
+			&role,
 		)
 		if err != nil {
 			return nil, err
 		}
-		allCredits = append(allCredits, credits)
+
+		// Format the credits data with user information
+		creditInfo := map[string]interface{}{
+			"id":         id,
+			"user_id":    userID,
+			"credits":    credits,
+			"created_at": createdAt.Format(time.RFC3339),
+			"updated_at": updatedAt.Format(time.RFC3339),
+			"user": map[string]interface{}{
+				"name": name,
+				"role": role,
+			},
+		}
+
+		allCredits = append(allCredits, creditInfo)
 	}
 
 	if err = rows.Err(); err != nil {
