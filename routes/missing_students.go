@@ -791,4 +791,87 @@ func SetupMissingStudentsRoutes(router gin.IRouter, db *sql.DB) {
 			GetYearGroupCoordinatorsHandler(c, db)
 		})
 	}
+
+	// Add student search endpoint
+	router.GET("/students/search", func(c *gin.Context) {
+		SearchStudentsHandler(c, db)
+	})
+}
+
+// SearchStudentsHandler searches for students by name
+//
+// Endpoint: GET /api/students/search
+//
+// Query Parameters:
+//   - query: The search query string (minimum 2 characters)
+//
+// Returns:
+//   - 200 OK: List of matching students
+//   - 400 Bad Request: Invalid or missing query parameter
+//   - 500 Internal Server Error: Database error
+func SearchStudentsHandler(c *gin.Context, db *sql.DB) {
+	// Get search query from request
+	query := c.Query("query")
+	if query == "" || len(query) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Search query must be at least 2 characters",
+		})
+		return
+	}
+
+	// Search for students with names containing the query string
+	searchQuery := `
+		SELECT u.id, COALESCE(u.name, ''), COALESCE(a.year || ' ' || a.group_name, '')
+		FROM users u
+		LEFT JOIN attendance a ON u.id = a.user_id
+		WHERE u.role = 'student' AND u.name ILIKE '%' || $1 || '%'
+		ORDER BY u.name
+		LIMIT 20
+	`
+
+	rows, err := db.Query(searchQuery, query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error searching for students",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+
+	// Process the results
+	var students []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var name, yearGroup string
+
+		err := rows.Scan(&id, &name, &yearGroup)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Error scanning student data",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		students = append(students, map[string]interface{}{
+			"user_id":    id,
+			"name":       name,
+			"year_group": yearGroup,
+		})
+	}
+
+	if err = rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error iterating through students",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, students)
 }
