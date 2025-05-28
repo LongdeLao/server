@@ -170,64 +170,9 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if the reporter is assigned to the student's year group
-	var canReport bool
-	yearGroupQuery := `
-		SELECT EXISTS(
-			SELECT 1 FROM year_group_coordinators
-			WHERE user_id = $1 AND year_group = $2
-		)
-	`
-	fmt.Printf("🔍 [MissingStudentReport] Checking year group assignment with query: %s\n", yearGroupQuery)
-
-	err = db.QueryRow(yearGroupQuery, reporterID, studentYearGroup).Scan(&canReport)
-
-	if err != nil {
-		fmt.Printf("❌ [MissingStudentReport] Error checking year group assignment: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Error checking year group assignment",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	fmt.Printf("✅ [MissingStudentReport] Reporter is year group coordinator: %v\n", canReport)
-
-	// Also check if they have the attendance role, which would also allow reporting
-	var hasAttendanceRole bool
-	roleQuery := `
-		SELECT EXISTS(
-			SELECT 1 FROM additional_roles 
-			WHERE user_id = $1 AND role = 'attendance'
-		)
-	`
-	fmt.Printf("🔍 [MissingStudentReport] Checking attendance role with query: %s\n", roleQuery)
-
-	err = db.QueryRow(roleQuery, reporterID).Scan(&hasAttendanceRole)
-
-	if err != nil {
-		fmt.Printf("❌ [MissingStudentReport] Error checking attendance role: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Error checking attendance role",
-			"error":   err.Error(),
-		})
-		return
-	}
-
-	fmt.Printf("✅ [MissingStudentReport] Reporter has attendance role: %v\n", hasAttendanceRole)
-
-	// Allow reporting if either condition is met
-	if !canReport && !hasAttendanceRole {
-		fmt.Printf("⚠️ [MissingStudentReport] Reporter %d not authorized for year group %s\n",
-			reporterID, studentYearGroup)
-		c.JSON(http.StatusForbidden, gin.H{
-			"success": false,
-			"message": "You are not authorized to report missing students for this year group",
-		})
-		return
-	}
+	// Since we've confirmed the reporter is a staff member, we allow them to report missing students
+	// regardless of year group assignment or additional roles
+	fmt.Printf("✅ [MissingStudentReport] Staff member is authorized to report missing students\n")
 
 	// Check if the student is already reported as missing and not resolved
 	var alreadyReported bool
