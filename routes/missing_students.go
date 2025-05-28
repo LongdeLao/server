@@ -61,7 +61,10 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		Notes     string `json:"notes"`
 	}
 
+	fmt.Printf("📝 [MissingStudentReport] Received report request: %v\n", c.Request.URL.String())
+
 	if err := c.ShouldBindJSON(&request); err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Invalid request format: %v\n", err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid request format",
@@ -70,9 +73,13 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("📋 [MissingStudentReport] Request data: student_id=%d, notes_length=%d\n",
+		request.StudentID, len(request.Notes))
+
 	// Get the reporting staff member's ID from the request header or query param
 	reporterIDStr := c.Query("reporter_id")
 	if reporterIDStr == "" {
+		fmt.Printf("❌ [MissingStudentReport] Missing reporter_id parameter\n")
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Reporter ID is required",
@@ -82,6 +89,7 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 
 	reporterID, err := strconv.Atoi(reporterIDStr)
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Invalid reporter_id format: %s\n", reporterIDStr)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Invalid reporter ID format",
@@ -89,10 +97,13 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("👤 [MissingStudentReport] Reporter ID: %d\n", reporterID)
+
 	// Check if the reporter is a staff member
 	var isStaff bool
 	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND role = 'staff')", reporterID).Scan(&isStaff)
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Error checking reporter role: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Error checking reporter role",
@@ -102,6 +113,7 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 	}
 
 	if !isStaff {
+		fmt.Printf("⚠️ [MissingStudentReport] Reporter %d is not a staff member\n", reporterID)
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Only staff members can report missing students",
@@ -109,17 +121,33 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("✅ [MissingStudentReport] Reporter %d is a staff member\n", reporterID)
+
 	// Check if the student exists and get their year group
 	var studentExists bool
 	var studentName, studentYearGroup string
 
-	err = db.QueryRow(`
+	studentQuery := `
 		SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND role = 'student'),
 		       COALESCE(name, ''),
 		       COALESCE((SELECT year FROM attendance WHERE user_id = $1), '')
-	`, request.StudentID).Scan(&studentExists, &studentName, &studentYearGroup)
+	`
+	fmt.Printf("🔍 [MissingStudentReport] Checking student %d with query: %s\n", request.StudentID, studentQuery)
+
+	err = db.QueryRow(studentQuery, request.StudentID).Scan(&studentExists, &studentName, &studentYearGroup)
 
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Error checking student information: %v\n", err)
+
+		// Additional error details
+		var exists bool
+		errCheck := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", request.StudentID).Scan(&exists)
+		if errCheck != nil {
+			fmt.Printf("❌ [MissingStudentReport] Additional error checking if user exists: %v\n", errCheck)
+		} else {
+			fmt.Printf("🔍 [MissingStudentReport] User exists in users table: %v\n", exists)
+		}
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Error checking student information",
@@ -128,7 +156,11 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("👨‍🎓 [MissingStudentReport] Student: exists=%v, name=%s, yearGroup=%s\n",
+		studentExists, studentName, studentYearGroup)
+
 	if !studentExists {
+		fmt.Printf("⚠️ [MissingStudentReport] Student %d not found or not a student\n", request.StudentID)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "Student not found or not a student",
@@ -138,14 +170,18 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 
 	// Check if the reporter is assigned to the student's year group
 	var canReport bool
-	err = db.QueryRow(`
+	yearGroupQuery := `
 		SELECT EXISTS(
 			SELECT 1 FROM year_group_coordinators
 			WHERE user_id = $1 AND year_group = $2
 		)
-	`, reporterID, studentYearGroup).Scan(&canReport)
+	`
+	fmt.Printf("🔍 [MissingStudentReport] Checking year group assignment with query: %s\n", yearGroupQuery)
+
+	err = db.QueryRow(yearGroupQuery, reporterID, studentYearGroup).Scan(&canReport)
 
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Error checking year group assignment: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Error checking year group assignment",
@@ -154,16 +190,22 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("✅ [MissingStudentReport] Reporter is year group coordinator: %v\n", canReport)
+
 	// Also check if they have the attendance role, which would also allow reporting
 	var hasAttendanceRole bool
-	err = db.QueryRow(`
+	roleQuery := `
 		SELECT EXISTS(
 			SELECT 1 FROM additional_roles 
 			WHERE user_id = $1 AND role = 'attendance'
 		)
-	`, reporterID).Scan(&hasAttendanceRole)
+	`
+	fmt.Printf("🔍 [MissingStudentReport] Checking attendance role with query: %s\n", roleQuery)
+
+	err = db.QueryRow(roleQuery, reporterID).Scan(&hasAttendanceRole)
 
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Error checking attendance role: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Error checking attendance role",
@@ -172,8 +214,12 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("✅ [MissingStudentReport] Reporter has attendance role: %v\n", hasAttendanceRole)
+
 	// Allow reporting if either condition is met
 	if !canReport && !hasAttendanceRole {
+		fmt.Printf("⚠️ [MissingStudentReport] Reporter %d not authorized for year group %s\n",
+			reporterID, studentYearGroup)
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "You are not authorized to report missing students for this year group",
@@ -183,14 +229,18 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 
 	// Check if the student is already reported as missing and not resolved
 	var alreadyReported bool
-	err = db.QueryRow(`
+	alreadyReportedQuery := `
 		SELECT EXISTS(
 			SELECT 1 FROM missing_students
 			WHERE student_id = $1 AND status = 'reported'
 		)
-	`, request.StudentID).Scan(&alreadyReported)
+	`
+	fmt.Printf("🔍 [MissingStudentReport] Checking existing reports with query: %s\n", alreadyReportedQuery)
+
+	err = db.QueryRow(alreadyReportedQuery, request.StudentID).Scan(&alreadyReported)
 
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Error checking existing reports: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Error checking existing reports",
@@ -199,7 +249,10 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	fmt.Printf("✅ [MissingStudentReport] Student already reported: %v\n", alreadyReported)
+
 	if alreadyReported {
+		fmt.Printf("⚠️ [MissingStudentReport] Student %d already reported as missing\n", request.StudentID)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": "This student is already reported as missing",
@@ -209,14 +262,30 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 
 	// Insert the missing student report
 	var reportID int
-	err = db.QueryRow(`
+	insertQuery := `
 		INSERT INTO missing_students 
 		(student_id, reported_by, year_group, notes)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
-	`, request.StudentID, reporterID, studentYearGroup, request.Notes).Scan(&reportID)
+	`
+	fmt.Printf("📝 [MissingStudentReport] Inserting report with query: %s\n", insertQuery)
+	fmt.Printf("📝 [MissingStudentReport] Values: student_id=%d, reported_by=%d, year_group=%s, notes_length=%d\n",
+		request.StudentID, reporterID, studentYearGroup, len(request.Notes))
+
+	err = db.QueryRow(insertQuery, request.StudentID, reporterID, studentYearGroup, request.Notes).Scan(&reportID)
 
 	if err != nil {
+		fmt.Printf("❌ [MissingStudentReport] Error creating missing student report: %v\n", err)
+
+		// Check if the missing_students table exists
+		var tableExists bool
+		errCheck := db.QueryRow("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'missing_students')").Scan(&tableExists)
+		if errCheck != nil {
+			fmt.Printf("❌ [MissingStudentReport] Error checking if table exists: %v\n", errCheck)
+		} else {
+			fmt.Printf("🔍 [MissingStudentReport] missing_students table exists: %v\n", tableExists)
+		}
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Error creating missing student report",
@@ -224,6 +293,8 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		})
 		return
 	}
+
+	fmt.Printf("✅ [MissingStudentReport] Successfully created report with ID: %d\n", reportID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
