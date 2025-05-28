@@ -482,6 +482,11 @@ func GetMissingStudentsHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
+	// If no reports were found, initialize an empty array
+	if reports == nil {
+		reports = []MissingStudentReport{}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"reports": reports,
