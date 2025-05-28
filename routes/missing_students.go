@@ -129,7 +129,7 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 
 	studentQuery := `
 		SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND role = 'student'),
-		       COALESCE(users.user_name, ''),
+		       COALESCE(users.name, ''),
 		       COALESCE((SELECT year FROM attendance WHERE user_id = $1), '')
 		FROM users
 		WHERE users.id = $1
