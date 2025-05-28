@@ -796,6 +796,11 @@ func SetupMissingStudentsRoutes(router gin.IRouter, db *sql.DB) {
 	router.GET("/students/search", func(c *gin.Context) {
 		SearchStudentsHandler(c, db)
 	})
+
+	// Add endpoint to get all students at once for client-side searching
+	router.GET("/attendance/all-students", func(c *gin.Context) {
+		GetAllStudentsForAttendanceHandler(c, db)
+	})
 }
 
 // SearchStudentsHandler searches for students by name
@@ -874,4 +879,71 @@ func SearchStudentsHandler(c *gin.Context, db *sql.DB) {
 	}
 
 	c.JSON(http.StatusOK, students)
+}
+
+// GetAllStudentsForAttendanceHandler retrieves all students for client-side filtering
+//
+// Endpoint: GET /api/attendance/all-students
+//
+// Returns:
+//   - 200 OK: List of all students with basic information
+//   - 500 Internal Server Error: Database error
+func GetAllStudentsForAttendanceHandler(c *gin.Context, db *sql.DB) {
+	// Query to get all students with their year groups
+	query := `
+		SELECT u.id, COALESCE(u.name, ''), COALESCE(a.year, ''), COALESCE(a.group_name, '')
+		FROM users u
+		LEFT JOIN attendance a ON u.id = a.user_id
+		WHERE u.role = 'student'
+		ORDER BY u.name
+	`
+
+	rows, err := db.Query(query)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error retrieving students",
+			"error":   err.Error(),
+		})
+		return
+	}
+	defer rows.Close()
+
+	// Process the results
+	var students []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var name, year, groupName string
+
+		err := rows.Scan(&id, &name, &year, &groupName)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Error scanning student data",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		students = append(students, map[string]interface{}{
+			"user_id":    id,
+			"name":       name,
+			"year":       year,
+			"group_name": groupName,
+		})
+	}
+
+	if err = rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error iterating through students",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"students": students,
+	})
 }
