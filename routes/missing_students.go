@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -257,254 +258,191 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 // Query Parameters:
 //   - status: optional filter by status (e.g., "reported", "resolved")
 //   - year_group: optional filter by year group (e.g., "PIB", "IB1")
+//   - user_id: ID of the user making the request (for permission checks)
+//   - reporter_id: optional filter to specifically include reports made by this user ID
 //
 // Returns:
 //   - 200 OK: List of missing student reports
 //   - 403 Forbidden: User is not authorized to view this data
 //   - 500 Internal Server Error: Database error
 func GetMissingStudentsHandler(c *gin.Context, db *sql.DB) {
-	// Initialize an empty reports array
 	reports := []MissingStudentReport{}
 
-	// Get filters from query parameters
-	status := c.Query("status")
-	yearGroup := c.Query("year_group")
-	reporterIDStr := c.Query("reporter_id")
+	statusFilter := c.Query("status")
+	yearGroupFilter := c.Query("year_group")
+	requestingUserIDStr := c.Query("user_id")
+	reporterIDFilterStr := c.Query("reporter_id") // To fetch reports specifically made by this user
 
-	// Get the requesting user's ID
-	userIDStr := c.Query("user_id")
-	if userIDStr == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "User ID is required",
-		})
+	if requestingUserIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "User ID is required"})
 		return
 	}
-
-	userID, err := strconv.Atoi(userIDStr)
+	requestingUserID, err := strconv.Atoi(requestingUserIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"message": "Invalid user ID format",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid user ID format"})
 		return
 	}
 
-	// Check if the user is a staff member
 	var isStaff bool
-	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND role = 'staff')", userID).Scan(&isStaff)
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND role = 'staff')", requestingUserID).Scan(&isStaff)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Error checking user role",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Error checking user role", "error": err.Error()})
 		return
 	}
-
 	if !isStaff {
-		c.JSON(http.StatusForbidden, gin.H{
-			"success": false,
-			"message": "Only staff members can view missing students",
-		})
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "Only staff members can view missing students"})
 		return
 	}
 
-	// Check if the user has the attendance role or is a year group coordinator
 	var hasAttendanceRole bool
-	err = db.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1 FROM additional_roles 
-			WHERE user_id = $1 AND role = 'attendance'
-		)
-	`, userID).Scan(&hasAttendanceRole)
-
+	err = db.QueryRow(`SELECT EXISTS(SELECT 1 FROM additional_roles WHERE user_id = $1 AND role = 'attendance')`, requestingUserID).Scan(&hasAttendanceRole)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Error checking attendance role",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Error checking attendance role", "error": err.Error()})
 		return
 	}
 
-	// Build the query based on filters and permissions
-	query := `
+	baseQuery := `
 		SELECT 
-			m.id, 
-			m.student_id, 
-			student.name as student_name,
-			m.reported_by, 
-			reporter.name as reporter_name,
-			m.year_group, 
+			m.id, m.student_id, student.name as student_name,
+			m.reported_by, reporter.name as reporter_name, m.year_group, 
 			TO_CHAR(m.report_date, 'YYYY-MM-DD') as report_date, 
 			TO_CHAR(m.report_time, 'HH24:MI:SS') as report_time, 
-			m.status, 
-			m.notes, 
-			m.resolved_by, 
-			resolver.name as resolver_name,
-			m.resolved_at, 
-			m.created_at, 
-			m.updated_at
+			m.status, m.notes, m.resolved_by, resolver.name as resolver_name,
+			m.resolved_at, m.created_at, m.updated_at
 		FROM missing_students m
 		JOIN users student ON m.student_id = student.id
 		JOIN users reporter ON m.reported_by = reporter.id
 		LEFT JOIN users resolver ON m.resolved_by = resolver.id
-		WHERE 1=1
 	`
-
-	args := []interface{}{}
+	var conditions []string
+	var args []interface{}
 	argCount := 1
 
-	// Apply status filter if provided
-	if status != "" {
-		query += fmt.Sprintf(" AND m.status = $%d", argCount)
-		args = append(args, status)
-		argCount++
+	// --- Main Visibility Logic ---
+	var mainVisibilityClauses []string
+
+	// Clause 1: Permission-based visibility (attendance admin or year group coordinator)
+	var permissionBasedSubClauses []string
+	if hasAttendanceRole {
+		if yearGroupFilter != "" {
+			permissionBasedSubClauses = append(permissionBasedSubClauses, fmt.Sprintf("m.year_group = $%d", argCount))
+			args = append(args, yearGroupFilter)
+			argCount++
+		} else {
+			permissionBasedSubClauses = append(permissionBasedSubClauses, "1=1") // Sees all year groups
+		}
+	} else { // Not an attendance admin, restrict by year group coordination
+		if yearGroupFilter != "" {
+			var canViewThisYearGroup bool
+			errDb := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM year_group_coordinators WHERE user_id = $1 AND year_group = $2)`, requestingUserID, yearGroupFilter).Scan(&canViewThisYearGroup)
+			if errDb != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Error checking year group permissions", "error": errDb.Error()})
+				return
+			}
+			if canViewThisYearGroup {
+				permissionBasedSubClauses = append(permissionBasedSubClauses, fmt.Sprintf("m.year_group = $%d", argCount))
+				args = append(args, yearGroupFilter)
+				argCount++
+			} else {
+				permissionBasedSubClauses = append(permissionBasedSubClauses, "1=0") // Not authorized for this specific year group
+			}
+		} else { // No specific year group filter, so show all reports from year_groups they coordinate
+			permissionBasedSubClauses = append(permissionBasedSubClauses, fmt.Sprintf("m.year_group IN (SELECT year_group FROM year_group_coordinators WHERE user_id = $%d)", argCount))
+			args = append(args, requestingUserID)
+			argCount++
+		}
+	}
+	if len(permissionBasedSubClauses) > 0 {
+		mainVisibilityClauses = append(mainVisibilityClauses, "("+strings.Join(permissionBasedSubClauses, " AND ")+")")
 	}
 
-	// Apply reporter filter if provided
-	if reporterIDStr != "" {
-		reporterID, err := strconv.Atoi(reporterIDStr)
-		if err == nil {
-			query += fmt.Sprintf(" AND m.reported_by = $%d", argCount)
+	// Clause 2: User sees their own reports (if reporterIDFilterStr is provided and matches requestingUserID)
+	if reporterIDFilterStr != "" {
+		reporterID, errConv := strconv.Atoi(reporterIDFilterStr)
+		if errConv == nil && reporterID == requestingUserID { // Check if the filter is for the current user
+			mainVisibilityClauses = append(mainVisibilityClauses, fmt.Sprintf("m.reported_by = $%d", argCount))
 			args = append(args, reporterID)
 			argCount++
 		}
 	}
 
-	// If not an attendance admin, restrict to their year groups
-	if !hasAttendanceRole {
-		// Apply year group filter if provided, or restrict to user's assigned year groups
-		if yearGroup != "" {
-			query += fmt.Sprintf(" AND m.year_group = $%d", argCount)
-			args = append(args, yearGroup)
-			argCount++
+	if len(mainVisibilityClauses) > 0 {
+		conditions = append(conditions, "("+strings.Join(mainVisibilityClauses, " OR ")+")")
+	} else {
+		// Should ideally not happen if a staff user always has some visibility or is fetching their own.
+		// Default to no reports if no visibility clauses are met.
+		conditions = append(conditions, "1=0")
+	}
 
-			// Also check if user is allowed to view this year group
-			var canView bool
-			err = db.QueryRow(`
-				SELECT EXISTS(
-					SELECT 1 FROM year_group_coordinators
-					WHERE user_id = $1 AND year_group = $2
-				)
-			`, userID, yearGroup).Scan(&canView)
-
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"success": false,
-					"message": "Error checking year group permissions",
-					"error":   err.Error(),
-				})
-				return
-			}
-
-			if !canView {
-				c.JSON(http.StatusForbidden, gin.H{
-					"success": false,
-					"message": "You are not authorized to view this year group",
-				})
-				return
-			}
-		} else {
-			// Restrict to user's assigned year groups
-			query += fmt.Sprintf(" AND m.year_group IN (SELECT year_group FROM year_group_coordinators WHERE user_id = $%d)", argCount)
-			args = append(args, userID)
-			argCount++
-		}
-	} else if yearGroup != "" {
-		// Attendance admin with year group filter
-		query += fmt.Sprintf(" AND m.year_group = $%d", argCount)
-		args = append(args, yearGroup)
+	// --- Status filter (applies to all visible reports) ---
+	if statusFilter != "" {
+		conditions = append(conditions, fmt.Sprintf("m.status = $%d", argCount))
+		args = append(args, statusFilter)
 		argCount++
 	}
 
-	// Order by most recent first
-	query += " ORDER BY m.created_at DESC"
+	fullQuery := baseQuery
+	if len(conditions) > 0 {
+		fullQuery += " WHERE " + strings.Join(conditions, " AND ")
+	} else {
+		// Fallback, though ideally the logic above ensures `conditions` is not empty.
+		fullQuery += " WHERE 1=0" // No reports if no conditions met
+	}
 
-	// Execute the query
-	rows, err := db.Query(query, args...)
+	fullQuery += " ORDER BY m.created_at DESC"
+
+	fmt.Printf("Query: %s\nArgs: %v\n", fullQuery, args)
+
+	rows, err := db.Query(fullQuery, args...)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Error retrieving missing students",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Error retrieving missing students", "error": err.Error()})
 		return
 	}
 	defer rows.Close()
 
-	// Process the results
 	for rows.Next() {
 		var report MissingStudentReport
 		var resolverName sql.NullString
 		var resolvedAt sql.NullTime
 		var resolvedBy sql.NullInt64
 
-		err := rows.Scan(
-			&report.ID,
-			&report.StudentID,
-			&report.StudentName,
-			&report.ReportedBy,
-			&report.ReporterName,
-			&report.YearGroup,
-			&report.ReportDate,
-			&report.ReportTime,
-			&report.Status,
-			&report.Notes,
-			&resolvedBy,
-			&resolverName,
-			&resolvedAt,
-			&report.CreatedAt,
-			&report.UpdatedAt,
+		errScan := rows.Scan(
+			&report.ID, &report.StudentID, &report.StudentName,
+			&report.ReportedBy, &report.ReporterName, &report.YearGroup,
+			&report.ReportDate, &report.ReportTime, &report.Status, &report.Notes,
+			&resolvedBy, &resolverName, &resolvedAt,
+			&report.CreatedAt, &report.UpdatedAt,
 		)
 
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"message": "Error scanning missing student report",
-				"error":   err.Error(),
-			})
+		if errScan != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Error scanning missing student report", "error": errScan.Error()})
 			return
 		}
 
-		// Handle nullable fields
 		if resolvedBy.Valid {
 			id := int(resolvedBy.Int64)
 			report.ResolvedBy = &id
 		}
-
 		if resolverName.Valid {
 			name := resolverName.String
 			report.ResolverName = &name
 		}
-
 		if resolvedAt.Valid {
 			report.ResolvedAt = &resolvedAt.Time
 		}
-
 		reports = append(reports, report)
 	}
 
 	if err = rows.Err(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Error iterating through reports",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": "Error iterating through reports", "error": err.Error()})
 		return
 	}
 
-	// If no reports were found, initialize an empty array
-	if reports == nil {
+	if reports == nil { // Should be initialized to empty slice, but as a safeguard
 		reports = []MissingStudentReport{}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"reports": reports,
-		"count":   len(reports),
-	})
+	c.JSON(http.StatusOK, gin.H{"success": true, "reports": reports, "count": len(reports)})
 }
 
 // ResolveMissingStudentHandler marks a missing student as found
