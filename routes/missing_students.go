@@ -263,9 +263,13 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 //   - 403 Forbidden: User is not authorized to view this data
 //   - 500 Internal Server Error: Database error
 func GetMissingStudentsHandler(c *gin.Context, db *sql.DB) {
+	// Initialize an empty reports array
+	reports := []MissingStudentReport{}
+
 	// Get filters from query parameters
 	status := c.Query("status")
 	yearGroup := c.Query("year_group")
+	reporterIDStr := c.Query("reporter_id")
 
 	// Get the requesting user's ID
 	userIDStr := c.Query("user_id")
@@ -333,8 +337,8 @@ func GetMissingStudentsHandler(c *gin.Context, db *sql.DB) {
 			m.reported_by, 
 			reporter.name as reporter_name,
 			m.year_group, 
-			m.report_date, 
-			m.report_time, 
+			TO_CHAR(m.report_date, 'YYYY-MM-DD') as report_date, 
+			TO_CHAR(m.report_time, 'HH24:MI:SS') as report_time, 
 			m.status, 
 			m.notes, 
 			m.resolved_by, 
@@ -357,6 +361,16 @@ func GetMissingStudentsHandler(c *gin.Context, db *sql.DB) {
 		query += fmt.Sprintf(" AND m.status = $%d", argCount)
 		args = append(args, status)
 		argCount++
+	}
+
+	// Apply reporter filter if provided
+	if reporterIDStr != "" {
+		reporterID, err := strconv.Atoi(reporterIDStr)
+		if err == nil {
+			query += fmt.Sprintf(" AND m.reported_by = $%d", argCount)
+			args = append(args, reporterID)
+			argCount++
+		}
 	}
 
 	// If not an attendance admin, restrict to their year groups
@@ -421,7 +435,6 @@ func GetMissingStudentsHandler(c *gin.Context, db *sql.DB) {
 	defer rows.Close()
 
 	// Process the results
-	var reports []MissingStudentReport
 	for rows.Next() {
 		var report MissingStudentReport
 		var resolverName sql.NullString
@@ -810,6 +823,10 @@ func SetupMissingStudentsRoutes(router gin.IRouter, db *sql.DB) {
 			ResolveMissingStudentHandler(c, db)
 		})
 
+		missingStudentsGroup.POST("/cancel/:id", func(c *gin.Context) {
+			CancelMissingStudentReportHandler(c, db)
+		})
+
 		missingStudentsGroup.GET("/coordinators", func(c *gin.Context) {
 			GetYearGroupCoordinatorsHandler(c, db)
 		})
@@ -968,5 +985,171 @@ func GetAllStudentsForAttendanceHandler(c *gin.Context, db *sql.DB) {
 	c.JSON(http.StatusOK, gin.H{
 		"success":  true,
 		"students": students,
+	})
+}
+
+// CancelMissingStudentReportHandler cancels a missing student report
+//
+// Endpoint: POST /api/missing-students/cancel/:id
+//
+// Request Body:
+//
+//	{
+//	  "notes": string (optional)
+//	}
+//
+// Returns:
+//   - 200 OK: Successfully cancelled missing student report
+//   - 400 Bad Request: Invalid report ID
+//   - 403 Forbidden: User is not authorized to cancel this report
+//   - 404 Not Found: Report not found or already resolved
+//   - 500 Internal Server Error: Database error
+func CancelMissingStudentReportHandler(c *gin.Context, db *sql.DB) {
+	reportIDStr := c.Param("id")
+	reportID, err := strconv.Atoi(reportIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid report ID format",
+		})
+		return
+	}
+
+	// Get the requesting staff member's ID
+	requesterIDStr := c.Query("requester_id")
+	if requesterIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Requester ID is required",
+		})
+		return
+	}
+
+	requesterID, err := strconv.Atoi(requesterIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid requester ID format",
+		})
+		return
+	}
+
+	var request struct {
+		Notes string `json:"notes"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		// Notes are optional, so we can proceed with an empty request
+		request.Notes = ""
+	}
+
+	// Check if the requester is a staff member
+	var isStaff bool
+	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND role = 'staff')", requesterID).Scan(&isStaff)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error checking requester role",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if !isStaff {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "Only staff members can cancel missing student reports",
+		})
+		return
+	}
+
+	// Check if the report exists and is not resolved
+	var exists bool
+	var reportStatus string
+	var reportedByID int
+
+	err = db.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM missing_students WHERE id = $1),
+		       (SELECT status FROM missing_students WHERE id = $1),
+		       (SELECT reported_by FROM missing_students WHERE id = $1)
+	`, reportID).Scan(&exists, &reportStatus, &reportedByID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error checking report status",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{
+			"success": false,
+			"message": "Missing student report not found",
+		})
+		return
+	}
+
+	if reportStatus != "reported" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "This report has already been resolved or cancelled",
+		})
+		return
+	}
+
+	// Check if the requester is the one who reported the student
+	if reportedByID != requesterID {
+		// Check if they have attendance admin role
+		var hasAttendanceRole bool
+		err = db.QueryRow(`
+			SELECT EXISTS(
+				SELECT 1 FROM additional_roles 
+				WHERE user_id = $1 AND role = 'attendance'
+			)
+		`, requesterID).Scan(&hasAttendanceRole)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Error checking attendance role",
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		if !hasAttendanceRole {
+			c.JSON(http.StatusForbidden, gin.H{
+				"success": false,
+				"message": "You can only cancel reports that you submitted, unless you have attendance admin privileges",
+			})
+			return
+		}
+	}
+
+	// Update the report status to cancelled
+	_, err = db.Exec(`
+		UPDATE missing_students
+		SET status = 'cancelled',
+		    resolved_by = $1,
+		    resolved_at = CURRENT_TIMESTAMP,
+		    notes = CASE WHEN $2 <> '' THEN COALESCE(notes, '') || E'\n' || $2 ELSE notes END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $3
+	`, requesterID, request.Notes, reportID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Error cancelling missing student report",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Missing student report cancelled successfully",
 	})
 }
