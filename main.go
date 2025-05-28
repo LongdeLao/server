@@ -285,6 +285,9 @@ func main() {
 	// Register credits routes
 	routes.SetupCreditsRoutes(apiRouter, db)
 
+	// Register missing students routes
+	routes.SetupMissingStudentsRoutes(apiRouter, db)
+
 	// Register auto-mark test and settings routes directly in the apiRouter
 	// (Don't rely on the separate function that might not be properly registered)
 	apiRouter.GET("/settings/auto-mark", func(c *gin.Context) {

@@ -170,16 +170,16 @@ func GetYearGroups(c *gin.Context, db *sql.DB) {
 		if totalStudents > 0 {
 			// Students who are present or late today both count as "attending"
 			attendingToday := presentToday + lateToday
-			
+
 			// Calculate percentage - this should never exceed 100%
 			percentage := float64(attendingToday) / float64(totalStudents) * 100
 			attendancePercentage = fmt.Sprintf("%.1f%%", percentage)
-			
-			fmt.Printf("[DEBUG] Year Group %s %s: PresentToday=%d, LateToday=%d, TotalStudents=%d, Attendance=%.1f%%\n", 
+
+			fmt.Printf("[DEBUG] Year Group %s %s: PresentToday=%d, LateToday=%d, TotalStudents=%d, Attendance=%.1f%%\n",
 				group.Year, group.Section, presentToday, lateToday, totalStudents, percentage)
 		} else {
 			attendancePercentage = "0%"
-			fmt.Printf("[DEBUG] Year Group %s %s: Attendance Percentage = 0%% (No students)\n", 
+			fmt.Printf("[DEBUG] Year Group %s %s: Attendance Percentage = 0%% (No students)\n",
 				group.Year, group.Section)
 		}
 
@@ -1219,7 +1219,7 @@ func GetStudentAttendance(c *gin.Context, db *sql.DB) {
 		// Calculate the percentage of days the student was present or late (both count as attending)
 		attendedDays := record.Present + record.Late
 		attendancePercentage = float64(attendedDays) / float64(totalDays) * 100
-		
+
 		// Add debug logging
 		fmt.Printf("[DEBUG] Student %s (ID=%d): Historical attendance - Present=%d, Late=%d, Total=%d, Attendance=%.1f%%\n",
 			record.Name, record.UserID, record.Present, record.Late, totalDays, attendancePercentage)
@@ -1377,9 +1377,9 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 	}
 
 	// Log the request
-	fmt.Printf("[MARK ARRIVAL] Processing arrival for Student ID=%d, Date=%s\n", 
+	fmt.Printf("[MARK ARRIVAL] Processing arrival for Student ID=%d, Date=%s\n",
 		request.StudentID, request.Date)
-	
+
 	// Validate student ID
 	if request.StudentID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -1443,7 +1443,7 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 	}
 
 	// Log the current status
-	fmt.Printf("[MARK ARRIVAL] Student %s (ID=%d) current status: %s\n", 
+	fmt.Printf("[MARK ARRIVAL] Student %s (ID=%d) current status: %s\n",
 		studentName, request.StudentID, currentStatus)
 
 	// Verify the student is marked as late
@@ -1460,7 +1460,7 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 	arrivedTime := time.Now().UTC().Format("15:04:05")
 
 	// Log the arrival time
-	fmt.Printf("[MARK ARRIVAL] Setting arrival time for Student %s (ID=%d): %s UTC\n", 
+	fmt.Printf("[MARK ARRIVAL] Setting arrival time for Student %s (ID=%d): %s UTC\n",
 		studentName, request.StudentID, arrivedTime)
 
 	// 1. Update the attendance_history table: set arrived_at time and change status to "present"
@@ -1533,9 +1533,9 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 	err = tx.QueryRow(`
 		SELECT present, late FROM attendance WHERE user_id = $1
 	`, request.StudentID).Scan(&present, &late)
-	
+
 	if err == nil {
-		fmt.Printf("[MARK ARRIVAL] Updated counters for Student %s (ID=%d): Present=%d, Late=%d\n", 
+		fmt.Printf("[MARK ARRIVAL] Updated counters for Student %s (ID=%d): Present=%d, Late=%d\n",
 			studentName, request.StudentID, present, late)
 	}
 
@@ -1548,7 +1548,7 @@ func MarkStudentArrival(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	fmt.Printf("[MARK ARRIVAL] Successfully marked arrival for Student %s (ID=%d)\n", 
+	fmt.Printf("[MARK ARRIVAL] Successfully marked arrival for Student %s (ID=%d)\n",
 		studentName, request.StudentID)
 
 	c.JSON(http.StatusOK, gin.H{
