@@ -220,6 +220,10 @@ func main() {
 	}
 	defer db.Close()
 
+	// Sync attendance tables at startup to ensure they're in sync
+	fmt.Println("Syncing attendance tables at startup...")
+	routes.SyncAttendanceTables(db, "")
+
 	// Set up auto-marking scheduler
 	setupAutoMarkScheduler(db)
 	log.Printf("Auto-marking scheduler started - will run at %02d:%02d UTC (%02d:%02d Shanghai time) on weekdays",

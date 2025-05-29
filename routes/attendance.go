@@ -1776,6 +1776,141 @@ func AutoMarkLateStudents(db *sql.DB, targetTime *time.Time) {
 
 	fmt.Printf("[AUTO-MARK] Successfully auto-marked %d students as late (%d errors)\n",
 		successCount, errorCount)
+
+	// Run a sync to ensure attendance and attendance_history tables are in sync
+	// This helps prevent issues where a student is marked as late in one table but not the other
+	fmt.Println("[AUTO-MARK] Running attendance table sync to ensure consistency...")
+	SyncAttendanceTables(db, today)
+}
+
+// SyncAttendanceTables ensures the attendance and attendance_history tables are in sync
+// This function can be called periodically to fix mismatches between the tables
+func SyncAttendanceTables(db *sql.DB, date string) {
+	// If date is empty, use today's date
+	if date == "" {
+		date = time.Now().UTC().Format("2006-01-02")
+	}
+
+	fmt.Printf("[SYNC] Starting sync between attendance and attendance_history tables for date %s\n", date)
+
+	// Start a transaction
+	tx, err := db.Begin()
+	if err != nil {
+		fmt.Printf("[SYNC ERROR] Error starting transaction: %v\n", err)
+		return
+	}
+
+	// Find mismatches between attendance.today and attendance_history.status
+	rows, err := tx.Query(`
+		SELECT a.user_id, a.name, a.today, COALESCE(h.status, 'missing') as history_status
+		FROM attendance a
+		LEFT JOIN attendance_history h ON a.user_id = h.student_id AND h.attendance_date = $1
+		WHERE a.today != 'Pending' AND (h.status IS NULL OR LOWER(a.today) != h.status)
+	`, date)
+
+	if err != nil {
+		tx.Rollback()
+		fmt.Printf("[SYNC ERROR] Error querying mismatches: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	// Collect mismatch information
+	type mismatchInfo struct {
+		UserID        int
+		Name          string
+		AttendStatus  string
+		HistoryStatus string
+	}
+	var mismatches []mismatchInfo
+
+	for rows.Next() {
+		var mismatch mismatchInfo
+		if err := rows.Scan(&mismatch.UserID, &mismatch.Name, &mismatch.AttendStatus, &mismatch.HistoryStatus); err != nil {
+			tx.Rollback()
+			fmt.Printf("[SYNC ERROR] Error scanning mismatch data: %v\n", err)
+			return
+		}
+		mismatches = append(mismatches, mismatch)
+	}
+
+	// Check for errors during iteration
+	if err = rows.Err(); err != nil {
+		tx.Rollback()
+		fmt.Printf("[SYNC ERROR] Error iterating through mismatches: %v\n", err)
+		return
+	}
+
+	// Early exit if no mismatches
+	if len(mismatches) == 0 {
+		tx.Rollback() // No changes needed
+		fmt.Println("[SYNC] No mismatches found between attendance and attendance_history tables")
+		return
+	}
+
+	fmt.Printf("[SYNC] Found %d mismatches between attendance and attendance_history tables\n", len(mismatches))
+
+	// Process each mismatch
+	fixCount := 0
+	errorCount := 0
+
+	for i, mismatch := range mismatches {
+		// Convert status to lowercase for attendance_history
+		_, _, lowerCaseStatus, _ := validateAndNormalizeStatus(mismatch.AttendStatus)
+
+		fmt.Printf("[SYNC] Processing mismatch %d/%d: Student=%s (ID=%d), Attendance=%s, History=%s\n",
+			i+1, len(mismatches), mismatch.Name, mismatch.UserID, mismatch.AttendStatus, mismatch.HistoryStatus)
+
+		if mismatch.HistoryStatus == "missing" {
+			// No record in attendance_history, create one
+			_, err = tx.Exec(`
+				INSERT INTO attendance_history 
+				(student_id, status, attendance_date, arrived_at, created_at)
+				VALUES ($1, $2, $3, NULL, $4)
+			`, mismatch.UserID, lowerCaseStatus, date, time.Now().UTC())
+
+			if err != nil {
+				fmt.Printf("[SYNC ERROR] Error inserting history record for student %d: %v\n", mismatch.UserID, err)
+				errorCount++
+				continue
+			}
+		} else {
+			// Record exists, update it
+			var existingId int
+			err = tx.QueryRow(`
+				SELECT id FROM attendance_history 
+				WHERE student_id = $1 AND attendance_date = $2
+			`, mismatch.UserID, date).Scan(&existingId)
+
+			if err != nil {
+				fmt.Printf("[SYNC ERROR] Error finding history record for student %d: %v\n", mismatch.UserID, err)
+				errorCount++
+				continue
+			}
+
+			_, err = tx.Exec(`
+				UPDATE attendance_history 
+				SET status = $1
+				WHERE id = $2
+			`, lowerCaseStatus, existingId)
+
+			if err != nil {
+				fmt.Printf("[SYNC ERROR] Error updating history record for student %d: %v\n", mismatch.UserID, err)
+				errorCount++
+				continue
+			}
+		}
+
+		fixCount++
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		fmt.Printf("[SYNC ERROR] Error committing transaction: %v\n", err)
+		return
+	}
+
+	fmt.Printf("[SYNC] Successfully fixed %d mismatches (%d errors)\n", fixCount, errorCount)
 }
 
 // SetupAttendanceRoutes sets up the attendance routes
@@ -1802,6 +1937,25 @@ func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 		})
 		attendanceGroup.POST("/mark-arrival", func(c *gin.Context) {
 			MarkStudentArrival(c, db)
+		})
+		attendanceGroup.POST("/sync", func(c *gin.Context) {
+			var request struct {
+				Date string `json:"date"`
+			}
+
+			if err := c.ShouldBindJSON(&request); err != nil {
+				// If JSON binding fails, try to get date from query parameter
+				request.Date = c.Query("date")
+			}
+
+			// Run the sync in a separate goroutine so it doesn't block the response
+			go SyncAttendanceTables(db, request.Date)
+
+			c.JSON(http.StatusOK, gin.H{
+				"success": true,
+				"message": "Attendance table sync initiated. Check server logs for details.",
+				"date":    request.Date,
+			})
 		})
 	}
 }
