@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"server/notifications"
 	"strconv"
 	"strings"
 	"time"
@@ -242,12 +243,29 @@ func ReportMissingStudentHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	fmt.Printf("✅ [MissingStudentReport] Successfully created report with ID: %d\n", reportID)
+	// Send notifications to the appropriate year group coordinators
+	go func() {
+		// Import package to avoid circular dependency
+		err := notifications.SendMissingStudentReportNotification(
+			db,
+			request.StudentID,
+			reporterID,
+			studentName,
+			studentYearGroup,
+		)
 
+		if err != nil {
+			fmt.Printf("⚠️ [MissingStudentReport] Error sending notifications: %v\n", err)
+		} else {
+			fmt.Printf("✅ [MissingStudentReport] Notifications sent successfully\n")
+		}
+	}()
+
+	// Return success
 	c.JSON(http.StatusOK, gin.H{
 		"success":   true,
-		"message":   "Missing student reported successfully",
 		"report_id": reportID,
+		"message":   "Missing student report created successfully",
 	})
 }
 
@@ -622,6 +640,38 @@ func ResolveMissingStudentHandler(c *gin.Context, db *sql.DB) {
 			"error":   err.Error(),
 		})
 		return
+	}
+
+	// Get student name and reporter ID for notification
+	var studentName string
+	var reporterID int
+
+	err = db.QueryRow(`
+		SELECT u.name, ms.reported_by
+		FROM missing_students ms
+		JOIN users u ON ms.student_id = u.id
+		WHERE ms.id = $1
+	`, reportID).Scan(&studentName, &reporterID)
+
+	if err == nil {
+		// Send notification to the original reporter
+		go func() {
+			err := notifications.SendMissingStudentResolvedNotification(
+				db,
+				studentID,
+				reporterID,
+				resolverID,
+				studentName,
+			)
+
+			if err != nil {
+				fmt.Printf("⚠️ [ResolveMissingStudent] Error sending notification to reporter: %v\n", err)
+			} else {
+				fmt.Printf("✅ [ResolveMissingStudent] Notification sent to reporter successfully\n")
+			}
+		}()
+	} else {
+		fmt.Printf("⚠️ [ResolveMissingStudent] Could not get reporter info for notification: %v\n", err)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

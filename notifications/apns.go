@@ -148,6 +148,56 @@ func SendRefreshNotification(deviceToken string, refreshType string) error {
 	return nil
 }
 
+// SendPushNotification sends a general push notification with a title, body, and custom data
+func SendPushNotification(deviceToken string, title string, body string, customData map[string]string) error {
+	if !initialized {
+		if err := InitAPNS(); err != nil {
+			return err
+		}
+	}
+
+	// Validate device token
+	if deviceToken == "" {
+		return fmt.Errorf("empty device token")
+	}
+
+	// Create the notification payload
+	p := payload.NewPayload()
+	p.AlertTitle(title)
+	p.AlertBody(body)
+	p.Badge(1)
+	p.Sound("default")
+
+	// Add custom data
+	for key, value := range customData {
+		p.Custom(key, value)
+	}
+
+	// Create the notification
+	notification := &apns2.Notification{
+		DeviceToken: deviceToken,
+		Topic:       config.APNSTopic,
+		Payload:     p,
+		Priority:    apns2.PriorityHigh,
+		Expiration:  time.Now().Add(24 * time.Hour),
+	}
+
+	// Send the notification
+	res, err := client.Push(notification)
+	if err != nil {
+		return fmt.Errorf("failed to send APNs notification: %v", err)
+	}
+
+	// Log the result
+	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
+
+	if res.StatusCode != 200 {
+		return fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
+	}
+
+	return nil
+}
+
 // SendLiveActivityUpdate sends a push notification to update a Live Activity
 func SendLiveActivityUpdate(activityToken string, status string, responseTime time.Time, respondedBy string) error {
 	if !initialized {
