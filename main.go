@@ -190,9 +190,42 @@ func promptForServerStatus() {
 	fmt.Println()
 }
 
+// promptForAPNSEnvironment asks the user to select the APNS environment
+func promptForAPNSEnvironment() {
+	fmt.Println("🔔 Apple Push Notification Service (APNS) Configuration")
+	fmt.Println("======================================================")
+	fmt.Println()
+	fmt.Println("Please select the APNS environment:")
+	fmt.Println("  (p) Production - Use for App Store releases (default)")
+	fmt.Println("  (d) Development - Use for testing")
+	fmt.Println()
+	fmt.Print("Enter your choice [p/d] (default: p): ")
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	// Set APNS environment based on user input
+	switch input {
+	case "d", "dev", "development":
+		notifications.SetAPNSMode("development")
+		fmt.Println("🧪 APNS environment set to: DEVELOPMENT")
+	case "p", "prod", "production", "":
+		notifications.SetAPNSMode("production")
+		fmt.Println("🚀 APNS environment set to: PRODUCTION")
+	default:
+		fmt.Printf("❌ Invalid choice '%s'. Defaulting to PRODUCTION.\n", input)
+		notifications.SetAPNSMode("production")
+	}
+	fmt.Println()
+}
+
 func main() {
 	// Prompt for server status configuration
 	promptForServerStatus()
+	
+	// Prompt for APNS environment configuration
+	promptForAPNSEnvironment()
 
 	// Set Gin to production mode
 	gin.SetMode(gin.ReleaseMode)

@@ -9,104 +9,138 @@ import (
 // SendMissingStudentReportNotification sends a push notification to the appropriate year group coordinator(s)
 // when a student is reported missing
 func SendMissingStudentReportNotification(db *sql.DB, studentID, reporterID int, studentName, yearGroup string) error {
-	log.Printf("Sending missing student notification for %s (ID: %d) in year group %s", studentName, studentID, yearGroup)
+	log.Printf("🚨 Preparing missing student report notification for %s (ID: %d) in year group %s", studentName, studentID, yearGroup)
 
 	// Find the coordinators for this year group
 	query := `
 		SELECT u.id, u.name, u.device_id 
 		FROM users u
 		JOIN year_group_coordinators ygc ON u.id = ygc.user_id
-		WHERE ygc.year_group = $1 AND u.device_id IS NOT NULL AND u.device_id != '' AND u.device_id != 'not-registered'
+		WHERE ygc.year_group = $1
 	`
 
+	log.Printf("🔍 Searching for year group coordinators for: %s", yearGroup)
 	rows, err := db.Query(query, yearGroup)
 	if err != nil {
-		return fmt.Errorf("error querying year group coordinators: %v", err)
+		log.Printf("❌ Database error finding coordinators: %v", err)
+		return err
 	}
 	defer rows.Close()
 
-	sentCount := 0
+	// Track how many notifications were sent
+	notificationsSent := 0
+	coordinatorsFound := 0
+
 	for rows.Next() {
+		coordinatorsFound++
 		var coordinatorID int
-		var coordinatorName, deviceID string
+		var coordinatorName string
+		var deviceID sql.NullString
 
 		if err := rows.Scan(&coordinatorID, &coordinatorName, &deviceID); err != nil {
-			log.Printf("Error scanning coordinator data: %v", err)
+			log.Printf("❌ Error scanning coordinator data: %v", err)
 			continue
 		}
 
-		log.Printf("Sending notification to coordinator %s (ID: %d) with device ID: %s",
-			coordinatorName, coordinatorID, deviceID)
+		log.Printf("🔍 Found coordinator: %s (ID: %d)", coordinatorName, coordinatorID)
 
-		// Prepare notification content
+		// Skip if this user has no device token
+		if !deviceID.Valid || deviceID.String == "" {
+			log.Printf("⚠️ Coordinator %s has no device token, skipping notification", coordinatorName)
+			continue
+		}
+
+		// Prepare notification payload
+		customData := map[string]string{
+			"type":       "missing_student_report",
+			"studentID":  fmt.Sprintf("%d", studentID),
+			"reporterID": fmt.Sprintf("%d", reporterID),
+			"yearGroup":  yearGroup,
+		}
+
+		// Send the notification
 		title := "Missing Student Report"
-		body := fmt.Sprintf("%s has been reported missing from class by a staff member", studentName)
-		data := map[string]string{
-			"type":        "missing_student_report",
-			"student_id":  fmt.Sprintf("%d", studentID),
-			"reporter_id": fmt.Sprintf("%d", reporterID),
-			"year_group":  yearGroup,
-		}
+		body := fmt.Sprintf("%s has been reported missing", studentName)
 
-		// Send the push notification
-		if err := SendPushNotification(deviceID, title, body, data); err != nil {
-			log.Printf("Failed to send notification to coordinator %d: %v", coordinatorID, err)
+		log.Printf("📱 Sending notification to coordinator %s (device: %s)", coordinatorName, deviceID.String)
+		if err := SendPushNotification(deviceID.String, title, body, customData); err != nil {
+			log.Printf("❌ Failed to send notification to coordinator %s: %v", coordinatorName, err)
 		} else {
-			sentCount++
+			notificationsSent++
+			log.Printf("✅ Successfully sent notification to coordinator %s", coordinatorName)
 		}
 	}
 
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error iterating through coordinators: %v", err)
+	if coordinatorsFound == 0 {
+		log.Printf("⚠️ No coordinators found for year group: %s", yearGroup)
 	}
 
-	log.Printf("Sent notifications to %d coordinators for year group %s", sentCount, yearGroup)
+	log.Printf("📊 Missing student report summary: %d coordinators found, %d notifications sent",
+		coordinatorsFound, notificationsSent)
+
 	return nil
 }
 
-// SendMissingStudentResolvedNotification sends a push notification to the original reporter
+// SendMissingStudentResolvedNotification sends a push notification to the reporter
 // when a missing student case is resolved
 func SendMissingStudentResolvedNotification(db *sql.DB, studentID, reporterID, resolverID int, studentName string) error {
-	log.Printf("Sending resolution notification for student %s (ID: %d) to reporter (ID: %d)",
+	log.Printf("🚨 Preparing missing student resolution notification for %s (ID: %d), reporter ID: %d",
 		studentName, studentID, reporterID)
 
-	// Get the reporter's device ID
-	var deviceID, reporterName string
-	query := `SELECT device_id, name FROM users WHERE id = $1 AND device_id IS NOT NULL AND device_id != '' AND device_id != 'not-registered'`
+	// Get the reporter's device token
+	var deviceID sql.NullString
+	var reporterName sql.NullString
+
+	query := "SELECT device_id, name FROM users WHERE id = $1"
+	log.Printf("🔍 Looking up reporter (ID: %d) device token", reporterID)
 
 	err := db.QueryRow(query, reporterID).Scan(&deviceID, &reporterName)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("reporter has no valid device ID or doesn't exist")
+		log.Printf("❌ Database error finding reporter: %v", err)
+		return err
+	}
+
+	// Skip if this user has no device token
+	if !deviceID.Valid || deviceID.String == "" {
+		log.Printf("⚠️ Reporter %s has no device token, cannot send notification",
+			reporterName.String)
+		return fmt.Errorf("reporter has no device token")
+	}
+
+	log.Printf("🔍 Found reporter: %s with device token", reporterName.String)
+
+	// Get resolver name if available
+	var resolverName string = "Staff"
+	if resolverID > 0 {
+		err := db.QueryRow("SELECT name FROM users WHERE id = $1", resolverID).Scan(&resolverName)
+		if err != nil {
+			log.Printf("⚠️ Could not get resolver name: %v, using 'Staff'", err)
+		} else {
+			log.Printf("🔍 Found resolver: %s", resolverName)
 		}
-		return fmt.Errorf("error querying reporter: %v", err)
 	}
 
-	// Get resolver's name
-	var resolverName string
-	err = db.QueryRow(`SELECT name FROM users WHERE id = $1`, resolverID).Scan(&resolverName)
-	if err != nil {
-		resolverName = "A staff member"
+	// Prepare notification payload
+	customData := map[string]string{
+		"type":         "missing_student_resolved",
+		"studentID":    fmt.Sprintf("%d", studentID),
+		"reporterID":   fmt.Sprintf("%d", reporterID),
+		"resolverID":   fmt.Sprintf("%d", resolverID),
+		"resolverName": resolverName,
 	}
 
-	// Prepare notification content
+	// Send the notification
 	title := "Missing Student Update"
-	body := fmt.Sprintf("%s has been located and is safe", studentName)
-	if resolverName != "" {
-		body = fmt.Sprintf("%s has been located and is safe (resolved by %s)", studentName, resolverName)
+	body := fmt.Sprintf("%s has been found and is safe", studentName)
+
+	log.Printf("📱 Sending resolution notification to reporter %s (device: %s)",
+		reporterName.String, deviceID.String)
+
+	if err := SendPushNotification(deviceID.String, title, body, customData); err != nil {
+		log.Printf("❌ Failed to send resolution notification: %v", err)
+		return err
 	}
 
-	data := map[string]string{
-		"type":        "missing_student_resolved",
-		"student_id":  fmt.Sprintf("%d", studentID),
-		"resolver_id": fmt.Sprintf("%d", resolverID),
-	}
-
-	// Send the push notification
-	if err := SendPushNotification(deviceID, title, body, data); err != nil {
-		return fmt.Errorf("failed to send notification to reporter %d: %v", reporterID, err)
-	}
-
-	log.Printf("Successfully sent resolution notification to reporter %s (ID: %d)", reporterName, reporterID)
+	log.Printf("✅ Successfully sent resolution notification to reporter %s", reporterName.String)
 	return nil
 }

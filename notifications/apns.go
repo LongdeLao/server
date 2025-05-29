@@ -17,8 +17,27 @@ import (
 
 var (
 	client      *apns2.Client
-	initialized bool = false
+	initialized bool   = false
+	apnsMode    string = "production" // Default to production mode
 )
+
+// SetAPNSMode sets the APNS mode to either "production" or "development"
+func SetAPNSMode(mode string) {
+	if mode != "production" && mode != "development" {
+		log.Printf("⚠️ Invalid APNS mode: %s. Using production mode.", mode)
+		apnsMode = "production"
+	} else {
+		apnsMode = mode
+		log.Printf("🔔 APNS mode set to: %s", apnsMode)
+	}
+
+	// Reset client if it was already initialized
+	if initialized {
+		log.Printf("🔄 Resetting APNS client due to mode change")
+		initialized = false
+		client = nil
+	}
+}
 
 // InitAPNS initializes the APNS client
 func InitAPNS() error {
@@ -26,30 +45,43 @@ func InitAPNS() error {
 		return nil
 	}
 
+	log.Printf("🔔 Initializing APNs client in %s mode", apnsMode)
+	log.Printf("🔔 AuthKeyPath: %s", config.AuthKeyPath)
+	log.Printf("🔔 AuthKeyID: %s", config.AuthKeyID)
+	log.Printf("🔔 TeamID: %s", config.TeamID)
+	log.Printf("🔔 APNSTopic: %s", config.APNSTopic)
+
 	// Read the private key
 	bytes, err := ioutil.ReadFile(config.AuthKeyPath)
 	if err != nil {
+		log.Printf("❌ APNS ERROR: unable to read APNs key file: %v", err)
 		return fmt.Errorf("unable to read APNs key file: %v", err)
 	}
+	log.Printf("✅ APNs key file read successfully, size: %d bytes", len(bytes))
 
 	// Create a new token using the P8 file
 	authKey, err := token.AuthKeyFromBytes(bytes)
 	if err != nil {
+		log.Printf("❌ APNS ERROR: unable to load APNs key: %v", err)
 		return fmt.Errorf("unable to load APNs key: %v", err)
 	}
+	log.Printf("✅ APNs auth key loaded successfully")
 
 	// Create the token provider
-	token := &token.Token{
+	tokenProvider := &token.Token{
 		AuthKey: authKey,
 		KeyID:   config.AuthKeyID,
 		TeamID:  config.TeamID,
 	}
 
-	// Initialize the client for APNs Production environment
-	client = apns2.NewTokenClient(token).Production()
-
-	// Log which environment we're using
-	log.Println("✅ APNs client initialized in PRODUCTION mode")
+	// Initialize the client based on mode
+	if apnsMode == "development" {
+		client = apns2.NewTokenClient(tokenProvider).Development()
+		log.Printf("🧪 APNs client initialized in DEVELOPMENT mode")
+	} else {
+		client = apns2.NewTokenClient(tokenProvider).Production()
+		log.Printf("🚀 APNs client initialized in PRODUCTION mode")
+	}
 
 	initialized = true
 	return nil
@@ -57,14 +89,21 @@ func InitAPNS() error {
 
 // SendMessageNotification sends a push notification about a new message
 func SendMessageNotification(deviceToken string, conversationID int, senderName string, messageContent string) error {
+	log.Printf("📱 Preparing to send message notification to device: %s", deviceToken)
+	log.Printf("📱 Message from: %s, ConversationID: %d", senderName, conversationID)
+	log.Printf("📱 Content: %s", messageContent)
+
 	if !initialized {
+		log.Printf("📱 APNs client not initialized, initializing now...")
 		if err := InitAPNS(); err != nil {
+			log.Printf("❌ Failed to initialize APNs: %v", err)
 			return err
 		}
 	}
 
 	// Validate device token
 	if deviceToken == "" {
+		log.Printf("❌ Empty device token provided")
 		return fmt.Errorf("empty device token")
 	}
 
@@ -80,6 +119,10 @@ func SendMessageNotification(deviceToken string, conversationID int, senderName 
 	p.Custom("conversationID", conversationID)
 	p.Custom("messageType", "chat")
 
+	// Debug payload
+	payloadBytes, _ := p.MarshalJSON()
+	log.Printf("📱 Notification payload: %s", string(payloadBytes))
+
 	// Create the notification
 	notification := &apns2.Notification{
 		DeviceToken: deviceToken,
@@ -90,18 +133,23 @@ func SendMessageNotification(deviceToken string, conversationID int, senderName 
 	}
 
 	// Send the notification
+	log.Printf("📱 Sending notification to APNs server...")
 	res, err := client.Push(notification)
 	if err != nil {
+		log.Printf("❌ Failed to send APNs notification: %v", err)
 		return fmt.Errorf("failed to send APNs notification: %v", err)
 	}
 
-	// Log the result
-	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
+	// Log the result in detail
+	log.Printf("📱 APNs Response - StatusCode: %d, ApnsID: %s, Reason: %s",
+		res.StatusCode, res.ApnsID, res.Reason)
 
 	if res.StatusCode != 200 {
+		log.Printf("❌ APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
 		return fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
 	}
 
+	log.Printf("✅ APNs notification sent successfully to %s", deviceToken)
 	return nil
 }
 
@@ -150,14 +198,22 @@ func SendRefreshNotification(deviceToken string, refreshType string) error {
 
 // SendPushNotification sends a general push notification with a title, body, and custom data
 func SendPushNotification(deviceToken string, title string, body string, customData map[string]string) error {
+	log.Printf("📱 Preparing to send push notification to device: %s", deviceToken)
+	log.Printf("📱 Title: %s", title)
+	log.Printf("📱 Body: %s", body)
+	log.Printf("📱 Custom data: %+v", customData)
+
 	if !initialized {
+		log.Printf("📱 APNs client not initialized, initializing now...")
 		if err := InitAPNS(); err != nil {
+			log.Printf("❌ Failed to initialize APNs: %v", err)
 			return err
 		}
 	}
 
 	// Validate device token
 	if deviceToken == "" {
+		log.Printf("❌ Empty device token provided")
 		return fmt.Errorf("empty device token")
 	}
 
@@ -171,7 +227,12 @@ func SendPushNotification(deviceToken string, title string, body string, customD
 	// Add custom data
 	for key, value := range customData {
 		p.Custom(key, value)
+		log.Printf("📱 Adding custom data: %s = %s", key, value)
 	}
+
+	// Debug payload
+	payloadBytes, _ := p.MarshalJSON()
+	log.Printf("📱 Notification payload: %s", string(payloadBytes))
 
 	// Create the notification
 	notification := &apns2.Notification{
@@ -183,18 +244,23 @@ func SendPushNotification(deviceToken string, title string, body string, customD
 	}
 
 	// Send the notification
+	log.Printf("📱 Sending notification to APNs server...")
 	res, err := client.Push(notification)
 	if err != nil {
+		log.Printf("❌ Failed to send APNs notification: %v", err)
 		return fmt.Errorf("failed to send APNs notification: %v", err)
 	}
 
-	// Log the result
-	log.Printf("APNs Notification sent to %s: %v", deviceToken, res)
+	// Log the result in detail
+	log.Printf("📱 APNs Response - StatusCode: %d, ApnsID: %s, Reason: %s",
+		res.StatusCode, res.ApnsID, res.Reason)
 
 	if res.StatusCode != 200 {
+		log.Printf("❌ APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
 		return fmt.Errorf("APNs notification failed with status %d: %s", res.StatusCode, res.Reason)
 	}
 
+	log.Printf("✅ APNs notification sent successfully to %s", deviceToken)
 	return nil
 }
 
