@@ -34,7 +34,7 @@ var (
 	ServerStatus    string = "active"                     // Default status
 	StatusMessage   string = "Server is running normally" // Default message
 	EstimatedFinish string = ""                           // Estimated finish time for maintenance/construction
-)
+) 
 
 // Auto-marking configuration
 var (

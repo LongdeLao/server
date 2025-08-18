@@ -3,10 +3,12 @@ package routes
 import (
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +30,16 @@ type Document struct {
 	Status          string    `json:"status"`
 	Checksum        string    `json:"checksum"`
 	Version         int       `json:"version"`
+}
+
+// FSDocument represents a static document discovered on disk
+type FSDocument struct {
+	Name       string    `json:"name"`
+	Folder     string    `json:"folder"`
+	Ext        string    `json:"ext"`
+	URL        string    `json:"url"`
+	Size       int64     `json:"size"`
+	ModifiedAt time.Time `json:"modified_at"`
 }
 
 // GetDocumentsHandler handles requests to get all documents
@@ -379,6 +391,61 @@ func DeleteDocumentHandler(c *gin.Context, db *sql.DB) {
 	})
 }
 
+// ListStaticDocumentsHandler walks the ./documents directory and returns files with URLs under /document-files
+func ListStaticDocumentsHandler(c *gin.Context) {
+	baseDir := "./documents"
+	var items []FSDocument
+
+	walkFn := func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(baseDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			return statErr
+		}
+		// Normalize to URL path
+		urlPath := "/document-files/" + strings.ReplaceAll(rel, string(os.PathSeparator), "/")
+		name := filepath.Base(path)
+		ext := strings.ToLower(filepath.Ext(name))
+		folder := ""
+		parts := strings.Split(rel, string(os.PathSeparator))
+		if len(parts) > 1 {
+			folder = parts[0]
+		}
+		items = append(items, FSDocument{
+			Name:       name,
+			Folder:     folder,
+			Ext:        strings.TrimPrefix(ext, "."),
+			URL:        urlPath,
+			Size:       info.Size(),
+			ModifiedAt: info.ModTime(),
+		})
+		return nil
+	}
+
+	if err := filepath.WalkDir(baseDir, walkFn); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to read documents directory",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"items":   items,
+	})
+}
+
 // SetupDocumentRoutes registers all document-related routes
 func SetupDocumentRoutes(router gin.IRouter, db *sql.DB) {
 	// Create documents directory if it doesn't exist
@@ -387,6 +454,11 @@ func SetupDocumentRoutes(router gin.IRouter, db *sql.DB) {
 			fmt.Printf("Error creating documents directory: %v\n", err)
 		}
 	}
+
+	// Static listing endpoint
+	router.GET("/documents/static", func(c *gin.Context) {
+		ListStaticDocumentsHandler(c)
+	})
 
 	// Get all documents
 	router.GET("/documents", func(c *gin.Context) {

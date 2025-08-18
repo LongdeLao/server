@@ -398,10 +398,11 @@ func getProfileInfo(db *sql.DB) gin.HandlerFunc {
 		var user models.User
 		var status string
 
-		err = db.QueryRow("SELECT id, username, name, role, email, status FROM users WHERE id = $1", userId).Scan(
+		err = db.QueryRow("SELECT id, username, name, password, role, email, status FROM users WHERE id = $1", userId).Scan(
 			&user.ID,
 			&user.Username,
 			&user.Name,
+			&user.Password,
 			&user.Role,
 			&user.Email,
 			&status,
