@@ -455,12 +455,12 @@ func SetupDocumentRoutes(router gin.IRouter, db *sql.DB) {
 		}
 	}
 
-	// Static listing endpoint
+	// Static listing endpoint - matches frontend call to /api/documents/static
 	router.GET("/documents/static", func(c *gin.Context) {
 		ListStaticDocumentsHandler(c)
 	})
 
-	// Get all documents
+	// Get all documents - matches frontend call to /api/documents
 	router.GET("/documents", func(c *gin.Context) {
 		GetDocumentsHandler(c, db)
 	})
