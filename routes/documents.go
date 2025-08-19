@@ -455,7 +455,7 @@ func SetupDocumentRoutes(router gin.IRouter, db *sql.DB) {
 		}
 	}
 
-	// Static listing endpoint - matches frontend call to /api/documents/static
+	// Static listing endpoint - must be registered before :id route to avoid conflicts
 	router.GET("/documents/static", func(c *gin.Context) {
 		ListStaticDocumentsHandler(c)
 	})
@@ -465,14 +465,14 @@ func SetupDocumentRoutes(router gin.IRouter, db *sql.DB) {
 		GetDocumentsHandler(c, db)
 	})
 
-	// Get document by ID
-	router.GET("/documents/:id", func(c *gin.Context) {
-		GetDocumentByIDHandler(c, db)
-	})
-
 	// Upload a document
 	router.POST("/documents", func(c *gin.Context) {
 		UploadDocumentHandler(c, db)
+	})
+
+	// Get document by ID - must be after static routes to avoid conflicts
+	router.GET("/documents/:id", func(c *gin.Context) {
+		GetDocumentByIDHandler(c, db)
 	})
 
 	// Delete a document
