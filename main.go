@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+
 	"os"
 	"server/config"        // Your configuration package.
 	"server/notifications" // Import the notifications package
@@ -32,6 +33,45 @@ func CacheMiddleware() gin.HandlerFunc {
 			strings.HasPrefix(c.Request.URL.Path, "/api/student_formal_images/") {
 			c.Header("Cache-Control", "public, max-age=86400") // Cache for 1 day (86400 seconds)
 		}
+		c.Next()
+	}
+}
+
+// CORSMiddleware adds CORS headers to responses
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Allow all origins for document files and API routes
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD")
+		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Range")
+		c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+		c.Header("Access-Control-Allow-Credentials", "false")
+
+		// Handle preflight requests
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// DocumentFilesCORSMiddleware specifically for document files
+func DocumentFilesCORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Set CORS headers for document files (needed for PDF.js)
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Range, Content-Type, Accept")
+		c.Header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+
+		// Handle preflight requests
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
 		c.Next()
 	}
 }
@@ -223,7 +263,7 @@ func promptForAPNSEnvironment() {
 func main() {
 	// Prompt for server status configuration
 	promptForServerStatus()
-	
+
 	// Prompt for APNS environment configuration
 	promptForAPNSEnvironment()
 
@@ -272,14 +312,20 @@ func main() {
 	// Set up static file serving for images
 	router.Static("/images", "./images")
 	router.Static("/profile_pictures", "./profile_pictures")
-	router.Static("/document-files", "./documents")
 	router.Static("/student_formal_images", "./student_formal_images") // Add student formal images
+
+	// Set up document files with CORS middleware for PDF.js compatibility
+	documentGroup := router.Group("/document-files", DocumentFilesCORSMiddleware())
+	documentGroup.Static("/", "./documents")
 
 	// Also serve static files under /api prefix to maintain compatibility
 	router.Static("/api/profile_pictures", "./profile_pictures")
 	router.Static("/api/images", "./images")
-	router.Static("/api/document-files", "./documents")
-	router.Static("/api/student_formal_images", "./student_formal_images") // Add student formal images under API prefix
+	router.Static("/api/student_formal_images", "./student_formal_images")
+
+	// API document files with CORS
+	apiDocumentGroup := router.Group("/api/document-files", DocumentFilesCORSMiddleware())
+	apiDocumentGroup.Static("/", "./documents") // Add student formal images under API prefix
 
 	// Create an API router group
 	apiRouter := router.Group("/api")
