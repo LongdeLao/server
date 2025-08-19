@@ -393,23 +393,46 @@ func DeleteDocumentHandler(c *gin.Context, db *sql.DB) {
 
 // ListStaticDocumentsHandler walks the ./documents directory and returns files with URLs under /document-files
 func ListStaticDocumentsHandler(c *gin.Context) {
+	fmt.Printf("📁 [ListStaticDocuments] Handler started\n")
 	baseDir := "./documents"
 	var items []FSDocument
 
+	// Check if documents directory exists
+	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
+		fmt.Printf("📁 [ListStaticDocuments] Directory %s does not exist, creating it\n", baseDir)
+		// Create the directory if it doesn't exist
+		if err := os.MkdirAll(baseDir, 0755); err != nil {
+			fmt.Printf("❌ [ListStaticDocuments] Failed to create directory: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Documents directory does not exist and could not be created",
+				"error":   err.Error(),
+			})
+			return
+		}
+	} else {
+		fmt.Printf("📁 [ListStaticDocuments] Directory %s exists\n", baseDir)
+	}
+
 	walkFn := func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// Log the error but continue processing other files
+			fmt.Printf("⚠️ [ListStaticDocuments] Error accessing path %s: %v\n", path, err)
+			return nil // Continue walking despite errors
 		}
 		if d.IsDir() {
+			fmt.Printf("📂 [ListStaticDocuments] Found directory: %s\n", path)
 			return nil
 		}
 		rel, relErr := filepath.Rel(baseDir, path)
 		if relErr != nil {
-			return relErr
+			fmt.Printf("⚠️ [ListStaticDocuments] Error getting relative path for %s: %v\n", path, relErr)
+			return nil // Continue walking
 		}
 		info, statErr := d.Info()
 		if statErr != nil {
-			return statErr
+			fmt.Printf("⚠️ [ListStaticDocuments] Error getting file info for %s: %v\n", path, statErr)
+			return nil // Continue walking
 		}
 		// Normalize to URL path
 		urlPath := "/document-files/" + strings.ReplaceAll(rel, string(os.PathSeparator), "/")
@@ -420,6 +443,10 @@ func ListStaticDocumentsHandler(c *gin.Context) {
 		if len(parts) > 1 {
 			folder = parts[0]
 		}
+
+		fmt.Printf("📄 [ListStaticDocuments] Found file: %s (folder: %s, ext: %s, url: %s)\n",
+			name, folder, ext, urlPath)
+
 		items = append(items, FSDocument{
 			Name:       name,
 			Folder:     folder,
@@ -431,18 +458,25 @@ func ListStaticDocumentsHandler(c *gin.Context) {
 		return nil
 	}
 
+	fmt.Printf("📁 [ListStaticDocuments] Starting directory walk of %s\n", baseDir)
 	if err := filepath.WalkDir(baseDir, walkFn); err != nil {
+		fmt.Printf("❌ [ListStaticDocuments] Failed to walk directory: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Failed to read documents directory",
 			"error":   err.Error(),
+			"baseDir": baseDir,
 		})
 		return
 	}
 
+	fmt.Printf("✅ [ListStaticDocuments] Found %d documents\n", len(items))
+	// Always return success, even if no items found
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"items":   items,
+		"count":   len(items),
+		"message": fmt.Sprintf("Found %d documents in %s", len(items), baseDir),
 	})
 }
 
@@ -455,28 +489,35 @@ func SetupDocumentRoutes(router gin.IRouter, db *sql.DB) {
 		}
 	}
 
-	// Static listing endpoint - must be registered before :id route to avoid conflicts
+	// IMPORTANT: Static listing endpoint MUST be registered first to avoid conflicts with :id route
 	router.GET("/documents/static", func(c *gin.Context) {
+		fmt.Printf("🔍 [DocumentStatic] Request received for /documents/static\n")
 		ListStaticDocumentsHandler(c)
 	})
 
 	// Get all documents - matches frontend call to /api/documents
 	router.GET("/documents", func(c *gin.Context) {
+		fmt.Printf("🔍 [Documents] Request received for /documents\n")
 		GetDocumentsHandler(c, db)
 	})
 
 	// Upload a document
 	router.POST("/documents", func(c *gin.Context) {
+		fmt.Printf("🔍 [DocumentUpload] Request received for POST /documents\n")
 		UploadDocumentHandler(c, db)
 	})
 
-	// Get document by ID - must be after static routes to avoid conflicts
+	// Get document by ID - MUST be after static routes to avoid conflicts
 	router.GET("/documents/:id", func(c *gin.Context) {
+		docID := c.Param("id")
+		fmt.Printf("🔍 [DocumentByID] Request received for /documents/%s\n", docID)
 		GetDocumentByIDHandler(c, db)
 	})
 
 	// Delete a document
 	router.DELETE("/documents/:id", func(c *gin.Context) {
+		docID := c.Param("id")
+		fmt.Printf("🔍 [DocumentDelete] Request received for DELETE /documents/%s\n", docID)
 		DeleteDocumentHandler(c, db)
 	})
 }
