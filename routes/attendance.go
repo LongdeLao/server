@@ -378,6 +378,113 @@ func GetStudentsByYearGroup(c *gin.Context, db *sql.DB) {
 	})
 }
 
+// GetStudentsByYear returns all students for a specific year (PIB, IB1, IB2)
+//
+// Endpoint: GET /api/attendance/students-by-year/:year
+//
+// Parameters:
+//   - year: The year name (string, e.g., "PIB", "IB1", "IB2")
+//
+// Returns:
+//   - 200 OK: Successfully retrieved students
+//     {
+//     "success": true,
+//     "year": string,
+//     "students": [
+//     {
+//     "user_id": int,
+//     "name": string,
+//     "year": string,
+//     "group_name": string,
+//     "today": string,
+//     "present": int,
+//     "absent": int,
+//     "late": int,
+//     "medical": int,
+//     "early": int
+//     }
+//     ],
+//     "date": string // Current date in YYYY-MM-DD format
+//     }
+//   - 400 Bad Request: Invalid year
+//   - 500 Internal Server Error: Database error
+func GetStudentsByYear(c *gin.Context, db *sql.DB) {
+	year := c.Param("year")
+
+	// Validate year parameter
+	validYears := map[string]bool{
+		"PIB": true,
+		"IB1": true,
+		"IB2": true,
+	}
+
+	if !validYears[strings.ToUpper(year)] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid year. Must be PIB, IB1, or IB2",
+		})
+		return
+	}
+
+	// Query the database for all students in this year (both sections A and B)
+	rows, err := db.Query(`
+		SELECT user_id, name, year, group_name, today, present, absent, late, medical, early 
+		FROM attendance 
+		WHERE UPPER(year) = UPPER($1)
+		ORDER BY group_name, name
+	`, year)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error querying students: %v", err),
+		})
+		return
+	}
+	defer rows.Close()
+
+	// Parse the query results
+	var students []models.Student
+	for rows.Next() {
+		var student models.Student
+		if err := rows.Scan(
+			&student.UserID,
+			&student.Name,
+			&student.Year,
+			&student.GroupName,
+			&student.Today,
+			&student.Present,
+			&student.Absent,
+			&student.Late,
+			&student.Medical,
+			&student.Early,
+		); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Error scanning student data: %v", err),
+			})
+			return
+		}
+		students = append(students, student)
+	}
+
+	// Check for errors during iteration
+	if err = rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error iterating through students: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"year":     strings.ToUpper(year),
+		"students": students,
+		"date":     time.Now().Format("2006-01-02"),
+	})
+}
+
 // GetStudentAttendanceHistory retrieves all attendance records for a specific student
 //
 // Endpoint: GET /api/attendance/history/:id
@@ -1922,6 +2029,9 @@ func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 		})
 		attendanceGroup.GET("/students/:id", func(c *gin.Context) {
 			GetStudentsByYearGroup(c, db)
+		})
+		attendanceGroup.GET("/students-by-year/:year", func(c *gin.Context) {
+			GetStudentsByYear(c, db)
 		})
 		attendanceGroup.POST("/update", func(c *gin.Context) {
 			UpdateAttendance(c, db)
