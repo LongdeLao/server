@@ -119,6 +119,166 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 	return nil
 }
 
+// UpdateEvent updates an existing event in the events table and manages its images.
+func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
+	log.Println("Starting transaction for updating event:", event.EventID)
+	tx, err := db.Begin()
+	if err != nil {
+		log.Println("Error beginning transaction:", err)
+		return err
+	}
+
+	// Update event data in events table
+	queryEvent := `
+		UPDATE events 
+		SET author_id = $2, author_name = $3, title = $4, event_description = $5, 
+		    address = $6, event_date = $7, is_whole_day = $8, start_time = $9, end_time = $10
+		WHERE event_id = $1
+	`
+	result, err := tx.Exec(queryEvent, event.EventID, event.AuthorID, event.AuthorName, event.Title,
+		event.EventDescription, event.Address, event.EventDate, event.IsWholeDay, event.StartTime, event.EndTime)
+	if err != nil {
+		log.Println("Error updating event:", err)
+		tx.Rollback()
+		return err
+	}
+
+	// Check if the event was actually updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Println("Error getting rows affected:", err)
+		tx.Rollback()
+		return err
+	}
+	if rowsAffected == 0 {
+		tx.Rollback()
+		return fmt.Errorf("event not found")
+	}
+
+	// Delete existing images for this event
+	deleteImagesQuery := `DELETE FROM event_images WHERE event_id = $1`
+	_, err = tx.Exec(deleteImagesQuery, event.EventID)
+	if err != nil {
+		log.Println("Error deleting existing images:", err)
+		tx.Rollback()
+		return err
+	}
+
+	// Insert new images if any are provided
+	if c.Request.MultipartForm != nil && c.Request.MultipartForm.File["images"] != nil {
+		queryImage := `
+			INSERT INTO event_images (id, event_id, file_path) 
+			VALUES ($1, $2, $3)
+		`
+		files := c.Request.MultipartForm.File["images"]
+		for _, file := range files {
+			// Save the image and get the file path
+			imagePath, err := SaveImage(file, c)
+			if err != nil {
+				log.Println("Error saving image:", err)
+				tx.Rollback()
+				return err
+			}
+
+			// Insert image data into the database
+			imageID := uuid.New().String()
+			_, err = tx.Exec(queryImage, imageID, event.EventID, imagePath)
+			if err != nil {
+				log.Println("Error inserting image data:", err)
+				tx.Rollback()
+				return err
+			}
+		}
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		log.Println("Error committing transaction:", err)
+		return err
+	}
+	log.Println("Event updated successfully.")
+	return nil
+}
+
+// DeleteEvent deletes an event and all its associated images from the database.
+func DeleteEvent(db *sql.DB, eventID string) error {
+	log.Println("Starting transaction for deleting event:", eventID)
+	tx, err := db.Begin()
+	if err != nil {
+		log.Println("Error beginning transaction:", err)
+		return err
+	}
+
+	// First, get the image file paths so we can delete the actual files
+	getImagesQuery := `SELECT file_path FROM event_images WHERE event_id = $1`
+	rows, err := tx.Query(getImagesQuery, eventID)
+	if err != nil {
+		log.Println("Error getting image paths:", err)
+		tx.Rollback()
+		return err
+	}
+
+	var imagePaths []string
+	for rows.Next() {
+		var filePath string
+		if err := rows.Scan(&filePath); err != nil {
+			log.Println("Error scanning image path:", err)
+			rows.Close()
+			tx.Rollback()
+			return err
+		}
+		imagePaths = append(imagePaths, filePath)
+	}
+	rows.Close()
+
+	// Delete image records from database
+	deleteImagesQuery := `DELETE FROM event_images WHERE event_id = $1`
+	_, err = tx.Exec(deleteImagesQuery, eventID)
+	if err != nil {
+		log.Println("Error deleting image records:", err)
+		tx.Rollback()
+		return err
+	}
+
+	// Delete the event record
+	deleteEventQuery := `DELETE FROM events WHERE event_id = $1`
+	result, err := tx.Exec(deleteEventQuery, eventID)
+	if err != nil {
+		log.Println("Error deleting event:", err)
+		tx.Rollback()
+		return err
+	}
+
+	// Check if the event was actually deleted
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		log.Println("Error getting rows affected:", err)
+		tx.Rollback()
+		return err
+	}
+	if rowsAffected == 0 {
+		tx.Rollback()
+		return fmt.Errorf("event not found")
+	}
+
+	// Commit the transaction
+	if err = tx.Commit(); err != nil {
+		log.Println("Error committing transaction:", err)
+		return err
+	}
+
+	// Delete the actual image files from disk (after successful database deletion)
+	for _, imagePath := range imagePaths {
+		if err := os.Remove(imagePath); err != nil {
+			// Log the error but don't fail the entire operation
+			log.Printf("Warning: Could not delete image file %s: %v", imagePath, err)
+		}
+	}
+
+	log.Println("Event and associated images deleted successfully.")
+	return nil
+}
+
 /**
  * RegisterEventRoutes registers all event-related routes.
  *
@@ -131,6 +291,16 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
  * 2. GET /event/:id
  *    - Retrieves event details by ID
  *    - Returns complete event data including images
+ *
+ * 3. PUT /update_event
+ *    - Updates an existing event
+ *    - Accepts event data in multipart form format
+ *    - Returns success message
+ *
+ * 4. DELETE /delete_event
+ *    - Deletes an event by ID
+ *    - Accepts eventID in JSON format
+ *    - Returns success message
  */
 func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 	router.POST("/post_event", func(c *gin.Context) {
@@ -197,6 +367,107 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 		log.Println("Event inserted successfully:", event.EventID)
 		c.JSON(http.StatusCreated, gin.H{"message": "Event created successfully", "eventID": event.EventID})
 	})
+
+	router.PUT("/update_event", func(c *gin.Context) {
+		log.Println("Received PUT request for /update_event")
+
+		// Parse multipart form
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32 MB max
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse form"})
+			return
+		}
+
+		eventID := c.PostForm("eventID")
+		if eventID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Event ID is required"})
+			return
+		}
+
+		// Parse authorID as integer
+		authorID, err := strconv.Atoi(c.PostForm("authorID"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid authorID"})
+			return
+		}
+
+		// Parse eventDate in ISO format
+		eventDate, err := time.Parse("2006-01-02T15:04:05.000Z", c.PostForm("eventDate"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event date format"})
+			return
+		}
+
+		// Create event from form data
+		event := Event{
+			EventID:          eventID,
+			AuthorID:         authorID,
+			AuthorName:       c.PostForm("authorName"),
+			Title:            c.PostForm("title"),
+			EventDescription: c.PostForm("eventDescription"),
+			Address:          c.PostForm("address"),
+			EventDate:        eventDate,
+			IsWholeDay:       c.PostForm("isWholeDay") == "true",
+		}
+
+		// Parse optional time fields in ISO format
+		if startTime := c.PostForm("startTime"); startTime != "" {
+			t, err := time.Parse("2006-01-02T15:04:05.000Z", startTime)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid start time format"})
+				return
+			}
+			event.StartTime = &t
+		}
+		if endTime := c.PostForm("endTime"); endTime != "" {
+			t, err := time.Parse("2006-01-02T15:04:05.000Z", endTime)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid end time format"})
+				return
+			}
+			event.EndTime = &t
+		}
+
+		// Update the event in the database
+		if err := UpdateEvent(db, event, c); err != nil {
+			log.Println("Failed to update event:", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update event: " + err.Error()})
+			return
+		}
+
+		// Return success message
+		log.Println("Event updated successfully:", event.EventID)
+		c.JSON(http.StatusOK, gin.H{"message": "Event updated successfully", "eventID": event.EventID})
+	})
+
+	router.DELETE("/delete_event", func(c *gin.Context) {
+		log.Println("Received DELETE request for /delete_event")
+
+		// Parse JSON request body
+		var requestBody struct {
+			EventID string `json:"eventID"`
+		}
+
+		if err := c.ShouldBindJSON(&requestBody); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+			return
+		}
+
+		if requestBody.EventID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Event ID is required"})
+			return
+		}
+
+		// Delete the event from the database
+		if err := DeleteEvent(db, requestBody.EventID); err != nil {
+			log.Println("Failed to delete event:", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete event: " + err.Error()})
+			return
+		}
+
+		// Return success message
+		log.Println("Event deleted successfully:", requestBody.EventID)
+		c.JSON(http.StatusOK, gin.H{"message": "Event deleted successfully", "eventID": requestBody.EventID})
+	})
 }
 
 // Helper function to parse integers
@@ -204,7 +475,6 @@ func parseInt(s string) int {
 	i, _ := strconv.Atoi(s)
 	return i
 }
-
 
 // Helper function to parse time
 func parseTime(s string) time.Time {
