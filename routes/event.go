@@ -513,9 +513,9 @@ func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
 		}
 		defer rows.Close()
 
-		var events []EventWithoutImages
+		var events []Event
 		for rows.Next() {
-			var ev EventWithoutImages
+			var ev Event
 			var startTime, endTime *time.Time // Initialize as pointers to nil
 			if err := rows.Scan(&ev.EventID, &ev.AuthorID, &ev.AuthorName, &ev.Title, &ev.EventDescription, &ev.Address, &ev.EventDate, &ev.IsWholeDay, &startTime, &endTime); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -526,8 +526,38 @@ func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
 			ev.StartTime = startTime
 			ev.EndTime = endTime
 
-			// Set the images field to an empty array since we're not returning image data
-			ev.Images = []string{} // Empty array for images
+			// Fetch images for this event
+			imagesQuery := `
+				SELECT file_path
+				FROM event_images
+				WHERE event_id = $1;
+			`
+			imageRows, err := db.Query(imagesQuery, ev.EventID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error fetching images: " + err.Error()})
+				return
+			}
+			defer imageRows.Close()
+
+			// Initialize images slice
+			ev.Images = []ImageModel{}
+
+			// Collect image paths
+			for imageRows.Next() {
+				var filePath string
+				if err := imageRows.Scan(&filePath); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning image: " + err.Error()})
+					return
+				}
+				ev.Images = append(ev.Images, ImageModel{
+					FilePath: filePath,
+				})
+			}
+
+			if err = imageRows.Err(); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Error in image rows: " + err.Error()})
+				return
+			}
 
 			events = append(events, ev)
 		}
