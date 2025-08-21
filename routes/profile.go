@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"server/models"
+	"server/utils"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -93,6 +94,13 @@ func changePassword(db *sql.DB) gin.HandlerFunc {
 			})
 			return
 		}
+		// Enforce basic password policy
+		if len(reqBody.NewPassword) < 8 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "New password must be at least 8 characters long",
+			})
+			return
+		}
 
 		// Get the user's current password from the database
 		var storedPassword string
@@ -110,35 +118,35 @@ func changePassword(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Check if the provided current password matches the stored password
-		// For plain text comparison (not recommended for production)
-		if storedPassword != reqBody.CurrentPassword {
-			// Try hashed comparison (if you're using bcrypt or similar)
-			err = bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(reqBody.CurrentPassword))
-			if err != nil {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"error": "Current password is incorrect",
-				})
+		// Verify the current password against stored value
+		if utils.IsHashedPassword(storedPassword) {
+			valid, verr := utils.VerifyPassword(reqBody.CurrentPassword, storedPassword)
+			if verr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Password verification error"})
 				return
+			}
+			if !valid {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect"})
+				return
+			}
+		} else {
+			// Try bcrypt (legacy hashed passwords)
+			if err := bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(reqBody.CurrentPassword)); err != nil {
+				// Fallback to plaintext legacy comparison
+				if storedPassword != reqBody.CurrentPassword {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect"})
+					return
+				}
 			}
 		}
 
-		// Hash the new password if using bcrypt
-		var newPasswordToStore string
-		// Uncomment and use this for hashed passwords
-		/*
-			hashedPassword, err := bcrypt.GenerateFromPassword([]byte(reqBody.NewPassword), bcrypt.DefaultCost)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": "Failed to process new password",
-				})
-				return
-			}
-			newPasswordToStore = string(hashedPassword)
-		*/
-
-		// For plaintext storage (not recommended for production)
-		newPasswordToStore = reqBody.NewPassword
+		// Hash the new password using Argon2
+		hashedPassword, err := utils.HashPassword(reqBody.NewPassword)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process new password"})
+			return
+		}
+		newPasswordToStore := hashedPassword
 
 		// Update the password in the database
 		_, err = db.Exec("UPDATE users SET password = $1 WHERE id = $2", newPasswordToStore, userId)
