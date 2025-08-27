@@ -9,7 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// StatusResponse represents the server status response
+/**
+ * StatusResponse represents the server status response.
+ */
 type StatusResponse struct {
 	Status          string    `json:"status"`
 	Message         string    `json:"message"`
@@ -18,34 +20,48 @@ type StatusResponse struct {
 	Uptime          string    `json:"uptime"`
 	IsActive        bool      `json:"is_active"`
 	Environment     string    `json:"environment"`
-	EstimatedFinish string    `json:"estimated_finish,omitempty"` // Only include if not empty
+	EstimatedFinish string    `json:"estimated_finish,omitempty"`
 }
 
 var serverStartTime = time.Now()
 
-// RegisterStatusRoute registers the server status check route
+/**
+ * RegisterStatusRoute registers the server status check route.
+ *
+ * Endpoint: GET /check-status
+ *
+ * Returns:
+ *   - 200 OK: Server is active
+ *     {
+ *       "status": string,
+ *       "message": string,
+ *       "timestamp": string,
+ *       "version": string,
+ *       "uptime": string,
+ *       "is_active": boolean,
+ *       "environment": string,
+ *       "estimated_finish": string (optional)
+ *     }
+ *   - 503 Service Unavailable: Server is in maintenance or construction mode
+ */
 func RegisterStatusRoute(router gin.IRouter) {
 	router.GET("/check-status", func(c *gin.Context) {
-		// Calculate uptime
 		uptime := time.Since(serverStartTime)
 		uptimeStr := formatDuration(uptime)
 
-		// Determine if server is active based on status
 		isActive := config.ServerStatus == "active"
 
-		// Create response
 		response := StatusResponse{
 			Status:          config.ServerStatus,
 			Message:         config.StatusMessage,
 			Timestamp:       time.Now(),
-			Version:         "1.0.0", // You can make this configurable too
+			Version:         "1.0.0",
 			Uptime:          uptimeStr,
 			IsActive:        isActive,
 			Environment:     getEnvironment(),
 			EstimatedFinish: config.EstimatedFinish,
 		}
 
-		// Set appropriate HTTP status code
 		statusCode := http.StatusOK
 		if config.ServerStatus == "maintenance" || config.ServerStatus == "construction" {
 			statusCode = http.StatusServiceUnavailable
@@ -55,7 +71,15 @@ func RegisterStatusRoute(router gin.IRouter) {
 	})
 }
 
-// formatDuration formats a duration into a human-readable string
+/**
+ * formatDuration formats a duration into a human-readable string.
+ *
+ * Parameters:
+ *   - d: time.Duration to format
+ *
+ * Returns:
+ *   - string: Formatted duration (e.g., "2d 5h 30m 15s")
+ */
 func formatDuration(d time.Duration) string {
 	days := int(d.Hours()) / 24
 	hours := int(d.Hours()) % 24
@@ -72,10 +96,13 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%ds", seconds)
 }
 
-// getEnvironment determines the current environment
+/**
+ * getEnvironment determines the current environment based on server status.
+ *
+ * Returns:
+ *   - string: Environment name ("production", "maintenance", "development", "unknown")
+ */
 func getEnvironment() string {
-	// You can make this more sophisticated by checking environment variables
-	// For now, we'll determine based on the server status
 	switch config.ServerStatus {
 	case "active":
 		return "production"

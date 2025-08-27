@@ -8,7 +8,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// StudentProfile represents a comprehensive profile of a student
+/**
+ * StudentProfile represents a comprehensive profile of a student.
+ */
 type StudentProfile struct {
 	ID            int        `json:"id"`
 	FirstName     string     `json:"first_name"`
@@ -21,17 +23,37 @@ type StudentProfile struct {
 	Attendance    Attendance `json:"attendance"`
 }
 
-// Attendance represents attendance statistics for a student
+/**
+ * Attendance represents attendance statistics for a student.
+ */
 type Attendance struct {
-	Present   int    `json:"present"`
-	Absent    int    `json:"absent"`
-	Late      int    `json:"late"`
-	Medical   int    `json:"medical"`
-	Early     int    `json:"early"`
-	Today     string `json:"today"`
+	Present int    `json:"present"`
+	Absent  int    `json:"absent"`
+	Late    int    `json:"late"`
+	Medical int    `json:"medical"`
+	Early   int    `json:"early"`
+	Today   string `json:"today"`
 }
 
-// GetAllStudentsHandler handles the request to get all student users
+/**
+ * GetAllStudentsHandler handles the request to get all student users.
+ *
+ * Endpoint: GET /get_all_students
+ *
+ * Query Parameters:
+ *   - userid: Required user ID for permission check
+ *
+ * Returns:
+ *   - 200 OK: List of all students
+ *     {
+ *       "success": boolean,
+ *       "students": array,
+ *       "count": number
+ *     }
+ *   - 400 Bad Request: Missing userid parameter
+ *   - 403 Forbidden: User does not have attendance admin permissions
+ *   - 500 Internal Server Error: Database error
+ */
 func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 	userID := c.Query("userid")
 	if userID == "" {
@@ -42,7 +64,6 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if user has attendance role
 	var hasAttendanceRole bool
 	query := `
 		SELECT EXISTS(
@@ -50,7 +71,7 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 			WHERE user_id = $1 AND role = 'attendance'
 		)
 	`
-	
+
 	err := db.QueryRow(query, userID).Scan(&hasAttendanceRole)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -69,7 +90,6 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Get all students (users with role = 'student')
 	students, err := getStudents(db)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -87,9 +107,17 @@ func GetAllStudentsHandler(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// getStudents retrieves all users with role 'student'
+/**
+ * getStudents retrieves all users with role 'student'.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *
+ * Returns:
+ *   - []map[string]interface{}: List of student data
+ *   - error: Any error that occurred during retrieval
+ */
 func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
-	// Debug: let's examine the structure of the attendance table
 	debugQuery := `
 		SELECT column_name, data_type 
 		FROM information_schema.columns 
@@ -107,7 +135,6 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 		}
 	}
 
-	// Simplified query to just join with attendance table
 	query := `
 		SELECT u.id, u.first_name, u.last_name, u.name, u.formal_picture, 
 		       a.year, a.group_name
@@ -129,22 +156,20 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 		var id int
 		var firstName, lastName, name, formalPicture sql.NullString
 		var year, groupName sql.NullString
-		
+
 		err := rows.Scan(&id, &firstName, &lastName, &name, &formalPicture, &year, &groupName)
 		if err != nil {
 			fmt.Println("Error scanning student row:", err)
 			return nil, err
 		}
 
-		// Debug: Print student year group info
-		fmt.Printf("Student %d - Year: %v, Group: %v\n", 
+		fmt.Printf("Student %d - Year: %v, Group: %v\n",
 			id, getStringValue(year), getStringValue(groupName))
 
-		// Combine year and group for display
 		var displayYearGroup string
 		yearStr := getStringValue(year)
 		groupStr := getStringValue(groupName)
-		
+
 		if yearStr != "" {
 			displayYearGroup = yearStr
 			if groupStr != "" {
@@ -172,7 +197,24 @@ func getStudents(db *sql.DB) ([]map[string]interface{}, error) {
 	return students, nil
 }
 
-// GetStudentInformationHandler handles the request to get detailed student information
+/**
+ * GetStudentInformationHandler handles the request to get detailed student information.
+ *
+ * Endpoint: GET /get_student_information
+ *
+ * Query Parameters:
+ *   - userid: Required student ID
+ *
+ * Returns:
+ *   - 200 OK: Detailed student information
+ *     {
+ *       "success": boolean,
+ *       "student": object
+ *     }
+ *   - 400 Bad Request: Missing userid parameter
+ *   - 404 Not Found: Student not found
+ *   - 500 Internal Server Error: Database error
+ */
 func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 	studentID := c.Query("userid")
 	if studentID == "" {
@@ -183,14 +225,13 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Get student basic info
 	var student StudentProfile
 	query := `
 		SELECT id, first_name, last_name, formal_picture
 		FROM users
 		WHERE id = $1 AND role = 'student'
 	`
-	
+
 	var firstName, lastName, formalPicture sql.NullString
 	err := db.QueryRow(query, studentID).Scan(
 		&student.ID,
@@ -198,7 +239,7 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 		&lastName,
 		&formalPicture,
 	)
-	
+
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"success": false,
@@ -212,14 +253,13 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 	student.LastName = getStringValue(lastName)
 	student.FullName = student.FirstName + " " + student.LastName
 	student.FormalPicture = getStringValue(formalPicture)
-	
-	// Get student attendance
+
 	attendanceQuery := `
 		SELECT present, absent, late, medical, early, today, year, group_name
 		FROM attendance
 		WHERE user_id = $1
 	`
-	
+
 	var today, year, groupName sql.NullString
 	err = db.QueryRow(attendanceQuery, studentID).Scan(
 		&student.Attendance.Present,
@@ -231,14 +271,13 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 		&year,
 		&groupName,
 	)
-	
+
 	if err == nil {
 		student.Attendance.Today = getStringValue(today)
 		student.YearGroup = getStringValue(year)
 		student.GroupName = getStringValue(groupName)
 	}
-	
-	// Get student classes (subjects)
+
 	student.Classes, err = getStudentClasses(db, studentID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -255,15 +294,24 @@ func GetStudentInformationHandler(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// getStudentClasses retrieves all classes for a student
+/**
+ * getStudentClasses retrieves all classes for a student.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *   - studentID: Student ID as string
+ *
+ * Returns:
+ *   - []Subject: List of student's subjects/classes
+ *   - error: Any error that occurred during retrieval
+ */
 func getStudentClasses(db *sql.DB, studentID string) ([]Subject, error) {
-	// Query to fetch subject details for the given student_id.
 	query := `
 		SELECT subject, code, initials, teaching_group, teacher_id
 		FROM subjects
 		WHERE student_id = $1;
 	`
-	
+
 	rows, err := db.Query(query, studentID)
 	if err != nil {
 		return nil, err
@@ -283,11 +331,10 @@ func getStudentClasses(db *sql.DB, studentID string) ([]Subject, error) {
 			continue
 		}
 
-		// Query to fetch teacher's full name
 		var firstName, lastName sql.NullString
 		teacherQuery := "SELECT first_name, last_name FROM users WHERE id = $1 LIMIT 1;"
 		err := db.QueryRow(teacherQuery, subject.TeacherID).Scan(&firstName, &lastName)
-		
+
 		if err == nil {
 			subject.TeacherName = getStringValue(firstName) + " " + getStringValue(lastName)
 		} else {
@@ -300,7 +347,15 @@ func getStudentClasses(db *sql.DB, studentID string) ([]Subject, error) {
 	return subjects, nil
 }
 
-// Helper function to safely handle NULL strings from the database
+/**
+ * getStringValue safely handles NULL strings from the database.
+ *
+ * Parameters:
+ *   - nullString: SQL null string value
+ *
+ * Returns:
+ *   - string: String value or empty string if null
+ */
 func getStringValue(nullString sql.NullString) string {
 	if nullString.Valid {
 		return nullString.String
@@ -308,29 +363,42 @@ func getStringValue(nullString sql.NullString) string {
 	return ""
 }
 
-// SetupStudentRoutes registers all student management routes
+/**
+ * SetupStudentRoutes registers all student management routes.
+ *
+ * Endpoints:
+ * 1. GET /get_all_students
+ *    - Retrieves all students (for administrators with attendance role)
+ *
+ * 2. GET /get_student_information
+ *    - Retrieves detailed information for a specific student
+ *
+ * Static Routes:
+ * - /formal_pictures: Serves formal student pictures
+ * - /api/formal_pictures: Alternative path for formal pictures
+ */
 func SetupStudentRoutes(router gin.IRouter, db *sql.DB) {
-	// Add the formal_picture column if it doesn't exist
 	addFormalPictureColumn(db)
 
-	// Configure static serving of formal pictures
 	router.Static("/formal_pictures", "./formal_pictures")
 	router.Static("/api/formal_pictures", "./formal_pictures")
 
-	// Get all students (for administrators with attendance role)
 	router.GET("/get_all_students", func(c *gin.Context) {
 		GetAllStudentsHandler(c, db)
 	})
 
-	// Get detailed information for a specific student
 	router.GET("/get_student_information", func(c *gin.Context) {
 		GetStudentInformationHandler(c, db)
 	})
 }
 
-// addFormalPictureColumn adds the formal_picture column to the users table if it doesn't exist
+/**
+ * addFormalPictureColumn adds the formal_picture column to the users table if it doesn't exist.
+ *
+ * Parameters:
+ *   - db: Database connection
+ */
 func addFormalPictureColumn(db *sql.DB) {
-	// Check if the column already exists
 	var exists bool
 	checkQuery := `
 		SELECT EXISTS (
@@ -339,17 +407,14 @@ func addFormalPictureColumn(db *sql.DB) {
 			WHERE table_name = 'users' AND column_name = 'formal_picture'
 		);
 	`
-	
+
 	err := db.QueryRow(checkQuery).Scan(&exists)
 	if err != nil || exists {
-		// Column exists or error occurred - no need to proceed
 		return
 	}
-	
-	// If column doesn't exist, add it
+
 	_, err = db.Exec(`ALTER TABLE users ADD COLUMN formal_picture TEXT;`)
 	if err != nil {
-		// Log error but don't fail
 		return
 	}
-} 
+}

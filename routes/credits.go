@@ -9,7 +9,25 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SetupCreditsRoutes registers all credit-related routes
+/**
+ * SetupCreditsRoutes registers all credit-related routes.
+ *
+ * Endpoints:
+ * 1. GET /credits/user/:userID
+ *    - Retrieves credit information for a specific user
+ *
+ * 2. POST /credits/deduct
+ *    - Deducts credits from a user's account (used for AI usage)
+ *
+ * 3. POST /credits/add
+ *    - Adds credits to a user's account (admin function)
+ *
+ * 4. PUT /credits/update
+ *    - Updates a user's credit amount (admin function)
+ *
+ * 5. GET /credits/all
+ *    - Retrieves all users' credit information (admin endpoint)
+ */
 func SetupCreditsRoutes(router *gin.RouterGroup, db *sql.DB) {
 	creditsGroup := router.Group("/credits")
 	{
@@ -17,11 +35,27 @@ func SetupCreditsRoutes(router *gin.RouterGroup, db *sql.DB) {
 		creditsGroup.POST("/deduct", deductCredits(db))
 		creditsGroup.POST("/add", addCredits(db))
 		creditsGroup.PUT("/update", updateCredits(db))
-		creditsGroup.GET("/all", getAllUserCredits(db)) // Admin endpoint
+		creditsGroup.GET("/all", getAllUserCredits(db))
 	}
 }
 
-// getUserCredits retrieves the credit information for a specific user
+/**
+ * getUserCredits retrieves the credit information for a specific user.
+ *
+ * Endpoint: GET /credits/user/:userID
+ *
+ * Parameters:
+ *   - userID: The ID of the user (integer)
+ *
+ * Returns:
+ *   - 200 OK: User credits retrieved successfully
+ *     {
+ *       "success": boolean,
+ *       "data": object
+ *     }
+ *   - 400 Bad Request: Invalid user ID format
+ *   - 500 Internal Server Error: Database error
+ */
 func getUserCredits(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userIDStr := c.Param("userID")
@@ -50,7 +84,28 @@ func getUserCredits(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// deductCredits deducts credits from a user's account (used for AI usage)
+/**
+ * deductCredits deducts credits from a user's account (used for AI usage).
+ *
+ * Endpoint: POST /credits/deduct
+ *
+ * Request Body:
+ * {
+ *   "user_id": number,  // Required: User ID
+ *   "amount": number    // Required: Amount to deduct (minimum 1)
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Credits deducted successfully
+ *     {
+ *       "success": boolean,
+ *       "message": string,
+ *       "data": object
+ *     }
+ *   - 400 Bad Request: Invalid request data
+ *   - 402 Payment Required: Insufficient credits
+ *   - 500 Internal Server Error: Database error
+ */
 func deductCredits(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request struct {
@@ -68,7 +123,6 @@ func deductCredits(db *sql.DB) gin.HandlerFunc {
 
 		credits, err := models.DeductUserCredits(db, request.UserID, request.Amount)
 		if err != nil {
-			// Check if it's an insufficient credits error
 			if err.Error() == "insufficient credits" ||
 				(len(err.Error()) > 20 && err.Error()[:20] == "insufficient credits") {
 				c.JSON(http.StatusPaymentRequired, gin.H{
@@ -93,7 +147,27 @@ func deductCredits(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// addCredits adds credits to a user's account (admin function)
+/**
+ * addCredits adds credits to a user's account (admin function).
+ *
+ * Endpoint: POST /credits/add
+ *
+ * Request Body:
+ * {
+ *   "user_id": number,  // Required: User ID
+ *   "amount": number    // Required: Amount to add (minimum 1)
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Credits added successfully
+ *     {
+ *       "success": boolean,
+ *       "message": string,
+ *       "data": object
+ *     }
+ *   - 400 Bad Request: Invalid request data
+ *   - 500 Internal Server Error: Database error
+ */
 func addCredits(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request struct {
@@ -126,7 +200,27 @@ func addCredits(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// updateCredits updates a user's credit amount (admin function)
+/**
+ * updateCredits updates a user's credit amount (admin function).
+ *
+ * Endpoint: PUT /credits/update
+ *
+ * Request Body:
+ * {
+ *   "user_id": number,     // Required: User ID
+ *   "new_credits": number  // Required: New credit amount (minimum 0)
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Credits updated successfully
+ *     {
+ *       "success": boolean,
+ *       "message": string,
+ *       "data": object
+ *     }
+ *   - 400 Bad Request: Invalid request data
+ *   - 500 Internal Server Error: Database error
+ */
 func updateCredits(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request struct {
@@ -151,7 +245,6 @@ func updateCredits(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get updated credits to return
 		credits, err := models.GetUserCredits(db, request.UserID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -169,7 +262,20 @@ func updateCredits(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// getAllUserCredits retrieves all users' credit information (admin function)
+/**
+ * getAllUserCredits retrieves all users' credit information (admin function).
+ *
+ * Endpoint: GET /credits/all
+ *
+ * Returns:
+ *   - 200 OK: All user credits retrieved successfully
+ *     {
+ *       "success": boolean,
+ *       "data": array,
+ *       "count": number
+ *     }
+ *   - 500 Internal Server Error: Database error
+ */
 func getAllUserCredits(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		allCredits, err := models.GetAllUserCredits(db)

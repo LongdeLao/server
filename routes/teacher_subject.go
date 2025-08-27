@@ -15,19 +15,19 @@ import (
  * Student represents a student's basic details in the teacher's subject view.
  */
 type Student struct {
-	ID        int    `json:"id"`        // Student's user ID
-	FirstName string `json:"name"`      // Student's first name
-	LastName  string `json:"last_name"` // Student's last name
+	ID        int    `json:"id"`
+	FirstName string `json:"name"`
+	LastName  string `json:"last_name"`
 }
 
 /**
  * AdminClass represents a class group with subject details.
  */
 type AdminClass struct {
-	SubjectName   string    `json:"subject_name"`   // Subject name (e.g., "Mathematics SL")
-	Code          string    `json:"code"`           // Subject code (e.g., "MATH-SL")
-	TeachingGroup string    `json:"teaching_group"` // Teaching group identifier
-	Students      []Student `json:"students"`       // List of students in the class
+	SubjectName   string    `json:"subject_name"`
+	Code          string    `json:"code"`
+	TeachingGroup string    `json:"teaching_group"`
+	Students      []Student `json:"students"`
 }
 
 /**
@@ -42,14 +42,14 @@ type AdminClass struct {
  *   - 200 OK: Successfully retrieved teacher's subjects
  *     [
  *       {
- *         "subject_name": string,   // Subject name (e.g., "Mathematics SL")
- *         "code": string,           // Subject code (e.g., "MATH-SL")
- *         "teaching_group": string, // Teaching group identifier
+ *         "subject_name": string,
+ *         "code": string,
+ *         "teaching_group": string,
  *         "students": [
  *           {
- *             "id": number,        // Student's user ID
- *             "name": string,      // Student's first name
- *             "last_name": string  // Student's last name
+ *             "id": number,
+ *             "name": string,
+ *             "last_name": string
  *           }
  *         ]
  *       }
@@ -73,7 +73,6 @@ func RegisterGetSubjectsTeacherRoute(router gin.IRouter, db *sql.DB) {
 			return
 		}
 
-		// For debugging purposes, print the result like the Python version does.
 		log.Printf("Admin Classes: %+v\n", adminClasses)
 		c.JSON(http.StatusOK, adminClasses)
 	})
@@ -88,13 +87,15 @@ func RegisterGetSubjectsTeacherRoute(router gin.IRouter, db *sql.DB) {
  * 3. Groups the data by subject, code, and teaching group
  * 4. Cleans subject names and adds SL/HL suffixes
  *
- * @param db *sql.DB - Database connection
- * @param teacherID int - The ID of the teacher
- * @return []AdminClass - List of grouped subjects with student details
- * @return error - Any error that occurred during the process
+ * Parameters:
+ *   - db: Database connection
+ *   - teacherID: The ID of the teacher
+ *
+ * Returns:
+ *   - []AdminClass: List of grouped subjects with student details
+ *   - error: Any error that occurred during the process
  */
 func getSubjectsByTeacher(db *sql.DB, teacherID int) ([]AdminClass, error) {
-	// Query to get subject, code, teaching_group, and student_id.
 	query := `
 		SELECT DISTINCT s.subject, s.code, s.teaching_group, s.student_id
 		FROM subjects s
@@ -107,8 +108,6 @@ func getSubjectsByTeacher(db *sql.DB, teacherID int) ([]AdminClass, error) {
 	}
 	defer rows.Close()
 
-	// Grouping: subject -> code -> teaching_group -> []Student.
-	// This mirrors the Python defaultdict(lambda: defaultdict(lambda: defaultdict(list))).
 	subjectGroups := make(map[string]map[string]map[string][]Student)
 
 	for rows.Next() {
@@ -119,13 +118,12 @@ func getSubjectsByTeacher(db *sql.DB, teacherID int) ([]AdminClass, error) {
 			return nil, fmt.Errorf("row scan error: %v", err)
 		}
 
-		// Query to fetch student details by student_id.
 		studentQuery := `SELECT name, last_name FROM users WHERE id = $1;`
 		var firstName, lastName string
 		err = db.QueryRow(studentQuery, studentID).Scan(&firstName, &lastName)
 		if err != nil {
 			log.Printf("Error fetching student with id %d: %v", studentID, err)
-			continue // Skip this student if not found.
+			continue
 		}
 
 		student := Student{
@@ -134,7 +132,6 @@ func getSubjectsByTeacher(db *sql.DB, teacherID int) ([]AdminClass, error) {
 			LastName:  lastName,
 		}
 
-		// Initialize nested maps if needed.
 		if _, exists := subjectGroups[subjectName]; !exists {
 			subjectGroups[subjectName] = make(map[string]map[string][]Student)
 		}
@@ -144,23 +141,18 @@ func getSubjectsByTeacher(db *sql.DB, teacherID int) ([]AdminClass, error) {
 		subjectGroups[subjectName][code][teachingGroup] = append(subjectGroups[subjectName][code][teachingGroup], student)
 	}
 
-	// Process grouped data into the desired structure.
 	var result []AdminClass
-	// Compile a regexp to remove everything after the first space.
 	re := regexp.MustCompile(`\s.*`)
 	for subjectName, codes := range subjectGroups {
 		for code, groups := range codes {
 			for teachingGroup, students := range groups {
-				// Remove the Chinese part (or everything after the first space).
 				cleanSubject := re.ReplaceAllString(subjectName, "")
-				// Append " SL" or " HL" based on code suffix.
 				if strings.HasSuffix(code, "SL") {
 					cleanSubject += " SL"
 				} else if strings.HasSuffix(code, "HL") {
 					cleanSubject += " HL"
 				}
 
-				// Build the admin class record matching the Python dictionary.
 				adminClass := AdminClass{
 					SubjectName:   cleanSubject,
 					Code:          code,

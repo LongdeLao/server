@@ -14,12 +14,12 @@ import (
  * Subject represents the subject data structure returned by the API.
  */
 type Subject struct {
-	Subject       string `json:"subject"`        // Subject name (e.g., "Mathematics SL")
-	Code          string `json:"code"`           // Subject code (e.g., "MATH-SL")
-	Initials      string `json:"initials"`       // Teacher's initials
-	TeachingGroup string `json:"teaching_group"` // Teaching group identifier
-	TeacherID     int    `json:"teacher_id"`     // Teacher's user ID
-	TeacherName   string `json:"teacher_name"`   // Teacher's full name
+	Subject       string `json:"subject"`
+	Code          string `json:"code"`
+	Initials      string `json:"initials"`
+	TeachingGroup string `json:"teaching_group"`
+	TeacherID     int    `json:"teacher_id"`
+	TeacherName   string `json:"teacher_name"`
 }
 
 /**
@@ -34,12 +34,12 @@ type Subject struct {
  *   - 200 OK: Successfully retrieved subjects
  *     [
  *       {
- *         "subject": string,       // Subject name (e.g., "Mathematics SL")
- *         "code": string,          // Subject code (e.g., "MATH-SL")
- *         "initials": string,      // Teacher's initials
- *         "teaching_group": string, // Teaching group identifier
- *         "teacher_id": number,    // Teacher's user ID
- *         "teacher_name": string   // Teacher's full name
+ *         "subject": string,
+ *         "code": string,
+ *         "initials": string,
+ *         "teaching_group": string,
+ *         "teacher_id": number,
+ *         "teacher_name": string
  *       }
  *     ]
  *   - 400 Bad Request: Invalid student_id format
@@ -47,7 +47,6 @@ type Subject struct {
  */
 func RegisterGetSubjectsRoute(router gin.IRouter, db *sql.DB) {
 	router.GET("/get_subjects/:student_id", func(c *gin.Context) {
-		// Retrieve the student ID from the URL parameters.
 		studentIDStr := c.Param("student_id")
 		studentID, err := strconv.Atoi(studentIDStr)
 		if err != nil {
@@ -55,7 +54,6 @@ func RegisterGetSubjectsRoute(router gin.IRouter, db *sql.DB) {
 			return
 		}
 
-		// Query to fetch subject details for the given student_id.
 		query := `
 			SELECT subject, code, initials, teaching_group, teacher_id
 			FROM subjects
@@ -68,12 +66,10 @@ func RegisterGetSubjectsRoute(router gin.IRouter, db *sql.DB) {
 		}
 		defer rows.Close()
 
-		// Regular expression to remove Chinese characters.
 		re := regexp.MustCompile(`[\p{Han}]+`)
 
 		subjects := []Subject{}
 
-		// Process each row.
 		for rows.Next() {
 			var subjectName, code, initials, teachingGroup string
 			var teacherID int
@@ -81,17 +77,14 @@ func RegisterGetSubjectsRoute(router gin.IRouter, db *sql.DB) {
 				continue
 			}
 
-			// Remove Chinese characters while keeping the English part.
 			subjectName = strings.TrimSpace(re.ReplaceAllString(subjectName, ""))
 
-			// Append " SL" or " HL" based on the subject code.
 			if strings.HasSuffix(code, "SL") {
 				subjectName += " SL"
 			} else if strings.HasSuffix(code, "HL") {
 				subjectName += " HL"
 			}
 
-			// Query to fetch teacher's first and last name.
 			teacherQuery := "SELECT first_name, last_name FROM users WHERE id = $1 LIMIT 1;"
 			var firstName, lastName string
 			err := db.QueryRow(teacherQuery, teacherID).Scan(&firstName, &lastName)
@@ -110,7 +103,6 @@ func RegisterGetSubjectsRoute(router gin.IRouter, db *sql.DB) {
 			})
 		}
 
-		// Return the results as JSON.
 		c.JSON(http.StatusOK, subjects)
 	})
 }

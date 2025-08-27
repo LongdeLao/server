@@ -21,41 +21,48 @@ import (
  * ImageModel represents an image associated with an event.
  */
 type ImageModel struct {
-	FilePath string `json:"filePath"` // The file path of the image
+	FilePath string `json:"filePath"`
 }
 
 /**
  * Event represents the complete event data structure.
  */
 type Event struct {
-	EventID          string       `json:"eventID"`             // Unique identifier for the event
-	AuthorID         int          `json:"authorID"`            // ID of the event creator
-	AuthorName       string       `json:"authorName"`          // Name of the event creator
-	Title            string       `json:"title"`               // Event title
-	EventDescription string       `json:"eventDescription"`    // Detailed description
-	Images           []ImageModel `json:"images"`              // List of associated images
-	Address          string       `json:"address"`             // Event location
-	EventDate        time.Time    `json:"eventDate"`           // Date of the event
-	IsWholeDay       bool         `json:"isWholeDay"`          // Whether it's a whole-day event
-	StartTime        *time.Time   `json:"startTime,omitempty"` // Start time (if not whole-day)
-	EndTime          *time.Time   `json:"endTime,omitempty"`   // End time (if not whole-day)
+	EventID          string       `json:"eventID"`
+	AuthorID         int          `json:"authorID"`
+	AuthorName       string       `json:"authorName"`
+	Title            string       `json:"title"`
+	EventDescription string       `json:"eventDescription"`
+	Images           []ImageModel `json:"images"`
+	Address          string       `json:"address"`
+	EventDate        time.Time    `json:"eventDate"`
+	IsWholeDay       bool         `json:"isWholeDay"`
+	StartTime        *time.Time   `json:"startTime,omitempty"`
+	EndTime          *time.Time   `json:"endTime,omitempty"`
 }
 
-// SaveImage saves the uploaded image to the server.
+/**
+ * SaveImage saves the uploaded image to the server.
+ *
+ * Parameters:
+ *   - file: Multipart file header
+ *   - c: Gin context
+ *
+ * Returns:
+ *   - string: File path of saved image
+ *   - error: Any error that occurred during saving
+ */
 func SaveImage(file *multipart.FileHeader, c *gin.Context) (string, error) {
-	// Generate a unique filename for the image
 	imageID := uuid.New().String()
 	extension := filepath.Ext(file.Filename)
 	imagePath := fmt.Sprintf("images/%s%s", imageID, extension)
 
-	// Create the images directory if it doesn't exist
 	err := os.MkdirAll("images", os.ModePerm)
 	if err != nil {
 		log.Println("Error creating directory for image storage:", err)
 		return "", fmt.Errorf("error creating directory: %v", err)
 	}
 
-	// Save the uploaded file
 	if err := c.SaveUploadedFile(file, imagePath); err != nil {
 		log.Println("Error saving image to file:", err)
 		return "", fmt.Errorf("error saving image to file: %v", err)
@@ -64,7 +71,17 @@ func SaveImage(file *multipart.FileHeader, c *gin.Context) (string, error) {
 	return imagePath, nil
 }
 
-// InsertEvent inserts the event into the events table and the image file paths into the event_images table.
+/**
+ * InsertEvent inserts the event into the events table and the image file paths into the event_images table.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *   - event: Event data to insert
+ *   - c: Gin context for file handling
+ *
+ * Returns:
+ *   - error: Any error that occurred during insertion
+ */
 func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 	log.Println("Starting transaction for event:", event.EventID)
 	tx, err := db.Begin()
@@ -73,7 +90,6 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 		return err
 	}
 
-	// Insert event data into events table
 	queryEvent := `
 		INSERT INTO events (event_id, author_id, author_name, title, event_description, address, event_date, is_whole_day, start_time, end_time) 
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -85,14 +101,12 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 		return err
 	}
 
-	// Insert images with file paths
 	queryImage := `
 		INSERT INTO event_images (id, event_id, file_path) 
 		VALUES ($1, $2, $3)
 	`
 	files := c.Request.MultipartForm.File["images"]
 	for _, file := range files {
-		// Save the image and get the file path
 		imagePath, err := SaveImage(file, c)
 		if err != nil {
 			log.Println("Error saving image:", err)
@@ -100,7 +114,6 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 			return err
 		}
 
-		// Insert image data into the database
 		imageID := uuid.New().String()
 		_, err = tx.Exec(queryImage, imageID, event.EventID, imagePath)
 		if err != nil {
@@ -110,7 +123,6 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 		}
 	}
 
-	// Commit the transaction
 	if err = tx.Commit(); err != nil {
 		log.Println("Error committing transaction:", err)
 		return err
@@ -119,7 +131,17 @@ func InsertEvent(db *sql.DB, event Event, c *gin.Context) error {
 	return nil
 }
 
-// UpdateEvent updates an existing event in the events table and manages its images.
+/**
+ * UpdateEvent updates an existing event in the events table and manages its images.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *   - event: Updated event data
+ *   - c: Gin context for file handling
+ *
+ * Returns:
+ *   - error: Any error that occurred during update
+ */
 func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 	log.Println("Starting transaction for updating event:", event.EventID)
 	tx, err := db.Begin()
@@ -128,7 +150,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 		return err
 	}
 
-	// Update event data in events table
 	queryEvent := `
 		UPDATE events 
 		SET author_id = $2, author_name = $3, title = $4, event_description = $5, 
@@ -143,7 +164,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 		return err
 	}
 
-	// Check if the event was actually updated
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		log.Println("Error getting rows affected:", err)
@@ -155,7 +175,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 		return fmt.Errorf("event not found")
 	}
 
-	// Delete existing images for this event
 	deleteImagesQuery := `DELETE FROM event_images WHERE event_id = $1`
 	_, err = tx.Exec(deleteImagesQuery, event.EventID)
 	if err != nil {
@@ -164,7 +183,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 		return err
 	}
 
-	// Insert new images if any are provided
 	if c.Request.MultipartForm != nil && c.Request.MultipartForm.File["images"] != nil {
 		queryImage := `
 			INSERT INTO event_images (id, event_id, file_path) 
@@ -172,7 +190,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 		`
 		files := c.Request.MultipartForm.File["images"]
 		for _, file := range files {
-			// Save the image and get the file path
 			imagePath, err := SaveImage(file, c)
 			if err != nil {
 				log.Println("Error saving image:", err)
@@ -180,7 +197,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 				return err
 			}
 
-			// Insert image data into the database
 			imageID := uuid.New().String()
 			_, err = tx.Exec(queryImage, imageID, event.EventID, imagePath)
 			if err != nil {
@@ -191,7 +207,6 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 		}
 	}
 
-	// Commit the transaction
 	if err = tx.Commit(); err != nil {
 		log.Println("Error committing transaction:", err)
 		return err
@@ -200,7 +215,16 @@ func UpdateEvent(db *sql.DB, event Event, c *gin.Context) error {
 	return nil
 }
 
-// DeleteEvent deletes an event and all its associated images from the database.
+/**
+ * DeleteEvent deletes an event and all its associated images from the database.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *   - eventID: Event ID to delete
+ *
+ * Returns:
+ *   - error: Any error that occurred during deletion
+ */
 func DeleteEvent(db *sql.DB, eventID string) error {
 	log.Println("Starting transaction for deleting event:", eventID)
 	tx, err := db.Begin()
@@ -209,7 +233,6 @@ func DeleteEvent(db *sql.DB, eventID string) error {
 		return err
 	}
 
-	// First, get the image file paths so we can delete the actual files
 	getImagesQuery := `SELECT file_path FROM event_images WHERE event_id = $1`
 	rows, err := tx.Query(getImagesQuery, eventID)
 	if err != nil {
@@ -231,7 +254,6 @@ func DeleteEvent(db *sql.DB, eventID string) error {
 	}
 	rows.Close()
 
-	// Delete image records from database
 	deleteImagesQuery := `DELETE FROM event_images WHERE event_id = $1`
 	_, err = tx.Exec(deleteImagesQuery, eventID)
 	if err != nil {
@@ -240,7 +262,6 @@ func DeleteEvent(db *sql.DB, eventID string) error {
 		return err
 	}
 
-	// Delete the event record
 	deleteEventQuery := `DELETE FROM events WHERE event_id = $1`
 	result, err := tx.Exec(deleteEventQuery, eventID)
 	if err != nil {
@@ -249,7 +270,6 @@ func DeleteEvent(db *sql.DB, eventID string) error {
 		return err
 	}
 
-	// Check if the event was actually deleted
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		log.Println("Error getting rows affected:", err)
@@ -261,16 +281,13 @@ func DeleteEvent(db *sql.DB, eventID string) error {
 		return fmt.Errorf("event not found")
 	}
 
-	// Commit the transaction
 	if err = tx.Commit(); err != nil {
 		log.Println("Error committing transaction:", err)
 		return err
 	}
 
-	// Delete the actual image files from disk (after successful database deletion)
 	for _, imagePath := range imagePaths {
 		if err := os.Remove(imagePath); err != nil {
-			// Log the error but don't fail the entire operation
 			log.Printf("Warning: Could not delete image file %s: %v", imagePath, err)
 		}
 	}
@@ -285,19 +302,15 @@ func DeleteEvent(db *sql.DB, eventID string) error {
  * Endpoints:
  * 1. POST /post_event
  *    - Creates a new event
- *    - Accepts event data in JSON format
+ *    - Accepts multipart form data with event details and images
  *    - Returns success message with event ID
  *
- * 2. GET /event/:id
- *    - Retrieves event details by ID
- *    - Returns complete event data including images
- *
- * 3. PUT /update_event
+ * 2. PUT /update_event
  *    - Updates an existing event
- *    - Accepts event data in multipart form format
+ *    - Accepts multipart form data with updated event details and images
  *    - Returns success message
  *
- * 4. DELETE /delete_event
+ * 3. DELETE /delete_event
  *    - Deletes an event by ID
  *    - Accepts eventID in JSON format
  *    - Returns success message
@@ -306,27 +319,23 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 	router.POST("/post_event", func(c *gin.Context) {
 		log.Println("Received POST request for /post_event")
 
-		// Parse multipart form
-		if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32 MB max
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse form"})
 			return
 		}
 
-		// Parse authorID as integer
 		authorID, err := strconv.Atoi(c.PostForm("authorID"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid authorID"})
 			return
 		}
 
-		// Parse eventDate in ISO format
 		eventDate, err := time.Parse("2006-01-02T15:04:05.000Z", c.PostForm("eventDate"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event date format"})
 			return
 		}
 
-		// Create event from form data
 		event := Event{
 			EventID:          c.PostForm("eventID"),
 			AuthorID:         authorID,
@@ -338,7 +347,6 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 			IsWholeDay:       c.PostForm("isWholeDay") == "true",
 		}
 
-		// Parse optional time fields in ISO format
 		if startTime := c.PostForm("startTime"); startTime != "" {
 			t, err := time.Parse("2006-01-02T15:04:05.000Z", startTime)
 			if err != nil {
@@ -356,14 +364,12 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 			event.EndTime = &t
 		}
 
-		// Insert the event (and images) into the database
 		if err := InsertEvent(db, event, c); err != nil {
 			log.Println("Failed to insert event:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to insert event: " + err.Error()})
 			return
 		}
 
-		// Return success message
 		log.Println("Event inserted successfully:", event.EventID)
 		c.JSON(http.StatusCreated, gin.H{"message": "Event created successfully", "eventID": event.EventID})
 	})
@@ -371,8 +377,7 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 	router.PUT("/update_event", func(c *gin.Context) {
 		log.Println("Received PUT request for /update_event")
 
-		// Parse multipart form
-		if err := c.Request.ParseMultipartForm(32 << 20); err != nil { // 32 MB max
+		if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse form"})
 			return
 		}
@@ -383,21 +388,18 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 			return
 		}
 
-		// Parse authorID as integer
 		authorID, err := strconv.Atoi(c.PostForm("authorID"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid authorID"})
 			return
 		}
 
-		// Parse eventDate in ISO format
 		eventDate, err := time.Parse("2006-01-02T15:04:05.000Z", c.PostForm("eventDate"))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid event date format"})
 			return
 		}
 
-		// Create event from form data
 		event := Event{
 			EventID:          eventID,
 			AuthorID:         authorID,
@@ -409,7 +411,6 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 			IsWholeDay:       c.PostForm("isWholeDay") == "true",
 		}
 
-		// Parse optional time fields in ISO format
 		if startTime := c.PostForm("startTime"); startTime != "" {
 			t, err := time.Parse("2006-01-02T15:04:05.000Z", startTime)
 			if err != nil {
@@ -427,14 +428,12 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 			event.EndTime = &t
 		}
 
-		// Update the event in the database
 		if err := UpdateEvent(db, event, c); err != nil {
 			log.Println("Failed to update event:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update event: " + err.Error()})
 			return
 		}
 
-		// Return success message
 		log.Println("Event updated successfully:", event.EventID)
 		c.JSON(http.StatusOK, gin.H{"message": "Event updated successfully", "eventID": event.EventID})
 	})
@@ -442,7 +441,6 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 	router.DELETE("/delete_event", func(c *gin.Context) {
 		log.Println("Received DELETE request for /delete_event")
 
-		// Parse JSON request body
 		var requestBody struct {
 			EventID string `json:"eventID"`
 		}
@@ -457,50 +455,76 @@ func RegisterEventRoutes(router gin.IRouter, db *sql.DB) {
 			return
 		}
 
-		// Delete the event from the database
 		if err := DeleteEvent(db, requestBody.EventID); err != nil {
 			log.Println("Failed to delete event:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete event: " + err.Error()})
 			return
 		}
 
-		// Return success message
 		log.Println("Event deleted successfully:", requestBody.EventID)
 		c.JSON(http.StatusOK, gin.H{"message": "Event deleted successfully", "eventID": requestBody.EventID})
 	})
 }
 
-// Helper function to parse integers
+/**
+ * parseInt parses a string to integer.
+ *
+ * Parameters:
+ *   - s: String to parse
+ *
+ * Returns:
+ *   - int: Parsed integer value
+ */
 func parseInt(s string) int {
 	i, _ := strconv.Atoi(s)
 	return i
 }
 
-// Helper function to parse time
+/**
+ * parseTime parses a string to time.Time.
+ *
+ * Parameters:
+ *   - s: String to parse
+ *
+ * Returns:
+ *   - time.Time: Parsed time value
+ */
 func parseTime(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339, s)
 	return t
 }
 
-// EventWithoutImages represents the event data structure without images.
+/**
+ * EventWithoutImages represents the event data structure without images.
+ */
 type EventWithoutImages struct {
 	EventID          string     `json:"eventID"`
 	AuthorID         int        `json:"authorID"`
 	AuthorName       string     `json:"authorName"`
 	Title            string     `json:"title"`
 	EventDescription string     `json:"eventDescription"`
-	Images           []string   `json:"images"` // Ensure images come after eventDescription
+	Images           []string   `json:"images"`
 	Address          string     `json:"address"`
 	EventDate        time.Time  `json:"eventDate"`
 	IsWholeDay       bool       `json:"isWholeDay"`
-	StartTime        *time.Time `json:"startTime,omitempty"` // Use pointer for optional fields
-	EndTime          *time.Time `json:"endTime,omitempty"`   // Use pointer for optional fields
+	StartTime        *time.Time `json:"startTime,omitempty"`
+	EndTime          *time.Time `json:"endTime,omitempty"`
 }
 
-// RegisterGetAllEvents registers a route that returns all events without images.
+/**
+ * RegisterGetAllEvents registers a route that returns all events without images.
+ *
+ * Endpoint: GET /events
+ *
+ * Returns:
+ *   - 200 OK: All events retrieved successfully
+ *     {
+ *       "events": array
+ *     }
+ *   - 500 Internal Server Error: Database error
+ */
 func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
 	router.GET("/events", func(c *gin.Context) {
-		// Query all events from the database (no filtering by month or year)
 		query := `
 			SELECT event_id, author_id, author_name, title, event_description, address,
 			       event_date, is_whole_day, start_time, end_time
@@ -516,17 +540,15 @@ func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
 		var events []Event
 		for rows.Next() {
 			var ev Event
-			var startTime, endTime *time.Time // Initialize as pointers to nil
+			var startTime, endTime *time.Time
 			if err := rows.Scan(&ev.EventID, &ev.AuthorID, &ev.AuthorName, &ev.Title, &ev.EventDescription, &ev.Address, &ev.EventDate, &ev.IsWholeDay, &startTime, &endTime); err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 
-			// Assign startTime and endTime pointers if they are not null
 			ev.StartTime = startTime
 			ev.EndTime = endTime
 
-			// Fetch images for this event
 			imagesQuery := `
 				SELECT file_path
 				FROM event_images
@@ -539,10 +561,8 @@ func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
 			}
 			defer imageRows.Close()
 
-			// Initialize images slice
 			ev.Images = []ImageModel{}
 
-			// Collect image paths
 			for imageRows.Next() {
 				var filePath string
 				if err := imageRows.Scan(&filePath); err != nil {
@@ -576,40 +596,21 @@ func RegisterGetAllEvents(router gin.IRouter, db *sql.DB) {
  *
  * Endpoint: GET /event/:id
  *
- * Parameters:
+ * Path Parameters:
  *   - id: The unique identifier of the event
  *
  * Returns:
  *   - 200 OK: Successfully retrieved event
  *     {
- *       "event": {
- *         "eventID": string,          // Unique identifier
- *         "authorID": number,         // Creator's ID
- *         "authorName": string,       // Creator's name
- *         "title": string,            // Event title
- *         "eventDescription": string, // Description
- *         "images": [                 // List of images
- *           {
- *             "id": string,          // Image ID
- *             "data": string         // Base64 image data
- *           }
- *         ],
- *         "address": string,          // Location
- *         "eventDate": string,        // Event date
- *         "isWholeDay": boolean,      // Whole-day flag
- *         "startTime": string,        // Start time (optional)
- *         "endTime": string          // End time (optional)
- *       }
+ *       "event": object
  *     }
  *   - 404 Not Found: Event not found
  *   - 500 Internal Server Error: Database error
  */
 func RegisterGetEventByID(router gin.IRouter, db *sql.DB) {
 	router.GET("/event/:id", func(c *gin.Context) {
-		// Get the eventID from the URL parameters
 		eventID := c.Param("id")
 
-		// Fetch the event from the database using GetEventByID function
 		event, err := GetEventByID(db, eventID)
 		if err != nil {
 			if err.Error() == "event not found" {
@@ -620,10 +621,8 @@ func RegisterGetEventByID(router gin.IRouter, db *sql.DB) {
 			return
 		}
 
-		// Print the event data that will be sent as JSON
 		fmt.Printf("Event to be sent: %+v\n", event)
 
-		// Return the event details as a JSON response
 		c.JSON(http.StatusOK, gin.H{"event": event})
 	})
 }
@@ -631,13 +630,15 @@ func RegisterGetEventByID(router gin.IRouter, db *sql.DB) {
 /**
  * GetEventByID fetches the event by its ID and returns the complete event including images.
  *
- * @param db *sql.DB - Database connection
- * @param eventID string - The unique identifier of the event
- * @return *Event - The complete event data
- * @return error - Any error that occurred during the process
+ * Parameters:
+ *   - db: Database connection
+ *   - eventID: The unique identifier of the event
+ *
+ * Returns:
+ *   - *Event: The complete event data
+ *   - error: Any error that occurred during the process
  */
 func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
-	// Query to fetch event details
 	eventQuery := `
 		SELECT event_id, author_id, author_name, title, event_description, address,
 		       event_date, is_whole_day, start_time, end_time
@@ -645,18 +646,15 @@ func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
 		WHERE event_id = $1;
 	`
 
-	// Query to fetch images for the event
 	imagesQuery := `
 		SELECT file_path
 		FROM event_images
 		WHERE event_id = $1;
 	`
 
-	// Create an event variable to hold the event data
 	var event Event
 	var startTime, endTime *time.Time
 
-	// Fetch event details from the database
 	err := db.QueryRow(eventQuery, eventID).Scan(
 		&event.EventID, &event.AuthorID, &event.AuthorName, &event.Title,
 		&event.EventDescription, &event.Address, &event.EventDate,
@@ -669,21 +667,17 @@ func GetEventByID(db *sql.DB, eventID string) (*Event, error) {
 		return nil, err
 	}
 
-	// Set startTime and endTime
 	event.StartTime = startTime
 	event.EndTime = endTime
 
-	// Fetch image paths for the event
 	rows, err := db.Query(imagesQuery, eventID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	// Initialize images slice
 	event.Images = []ImageModel{}
 
-	// Collect image paths
 	for rows.Next() {
 		var filePath string
 		if err := rows.Scan(&filePath); err != nil {

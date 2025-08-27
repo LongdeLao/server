@@ -10,7 +10,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// GetAllUsersHandler handles the request to get all users
+/**
+ * GetAllUsersHandler handles the request to get all users.
+ *
+ * Endpoint: GET /users
+ *
+ * Returns:
+ *   - 200 OK: List of all users
+ *     {
+ *       "success": boolean,
+ *       "users": array,
+ *       "count": number
+ *     }
+ *   - 500 Internal Server Error: Database error
+ */
 func GetAllUsersHandler(c *gin.Context, db *sql.DB) {
 	users, err := models.GetAllUsers(db)
 	if err != nil {
@@ -29,7 +42,27 @@ func GetAllUsersHandler(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// UpdateDeviceTokenHandler updates a user's device token for push notifications
+/**
+ * UpdateDeviceTokenHandler updates a user's device token for push notifications.
+ *
+ * Endpoint: POST /user/update-device-token
+ *
+ * Request Body:
+ * {
+ *   "user_id": number,      // Required: User ID
+ *   "device_token": string  // Required: Device token for push notifications
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Device token updated successfully
+ *     {
+ *       "success": boolean,
+ *       "message": string
+ *     }
+ *   - 400 Bad Request: Invalid request format or validation error
+ *   - 404 Not Found: User not found
+ *   - 500 Internal Server Error: Database error
+ */
 func UpdateDeviceTokenHandler(c *gin.Context, db *sql.DB) {
 	var request struct {
 		UserID      int    `json:"user_id" binding:"required"`
@@ -45,7 +78,6 @@ func UpdateDeviceTokenHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Validate request
 	if request.UserID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
@@ -62,7 +94,6 @@ func UpdateDeviceTokenHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if user exists
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", request.UserID).Scan(&exists)
 	if err != nil {
@@ -82,7 +113,6 @@ func UpdateDeviceTokenHandler(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Update the device token
 	_, err = db.Exec("UPDATE users SET device_id = $1 WHERE id = $2", request.DeviceToken, request.UserID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -99,24 +129,25 @@ func UpdateDeviceTokenHandler(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// SetupUserRoutes registers all user management routes
+/**
+ * SetupUserRoutes registers all user management routes.
+ *
+ * Endpoints:
+ * 1. GET /users
+ *    - Retrieves all users
+ *
+ * 2. POST /user/update-device-token
+ *    - Updates user's device token for push notifications
+ */
 func SetupUserRoutes(router gin.IRouter, db *sql.DB) {
 	userGroup := router.Group("/users")
 	{
-		// Get all users
 		userGroup.GET("", func(c *gin.Context) {
 			GetAllUsersHandler(c, db)
 		})
 
-		// Update device token endpoint
 		router.POST("/user/update-device-token", func(c *gin.Context) {
 			UpdateDeviceTokenHandler(c, db)
 		})
-
-		// Additional user management routes can be added here:
-		// - GET /api/users/:id - Get a specific user
-		// - POST /api/users - Create a new user
-		// - PUT /api/users/:id - Update a user
-		// - DELETE /api/users/:id - Delete a user
 	}
 }

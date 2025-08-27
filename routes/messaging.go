@@ -15,12 +15,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+/**
+ * Conversation represents a messaging conversation between users.
+ */
 type Conversation struct {
 	ID        int       `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	Users     []User    `json:"users"`
 }
 
+/**
+ * Message represents a single message in a conversation.
+ */
 type Message struct {
 	ID             int       `json:"id"`
 	ConversationID int       `json:"conversation_id"`
@@ -31,6 +37,9 @@ type Message struct {
 	Read           bool      `json:"read"`
 }
 
+/**
+ * User represents a user in the messaging system.
+ */
 type User struct {
 	ID        int    `json:"id"`
 	FirstName string `json:"first_name"`
@@ -39,8 +48,24 @@ type User struct {
 	Role      string `json:"role"`
 }
 
-// GetUserConversations retrieves all conversations for a specific user
-// GET /api/messaging/conversations/:user_id
+/**
+ * GetUserConversations retrieves all conversations for a specific user.
+ *
+ * Endpoint: GET /messaging/conversations/:user_id
+ *
+ * Path Parameters:
+ *   - user_id: User ID to get conversations for
+ *
+ * Returns:
+ *   - 200 OK: User conversations retrieved successfully
+ *     {
+ *       "success": boolean,
+ *       "conversations": array
+ *     }
+ *   - 400 Bad Request: Missing or invalid user ID
+ *   - 404 Not Found: User not found
+ *   - 500 Internal Server Error: Database error
+ */
 func GetUserConversations(c *gin.Context, db *sql.DB) {
 	userID := c.Param("user_id")
 	if userID == "" {
@@ -51,7 +76,6 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Convert user ID from string to integer
 	userIDInt, err := strconv.Atoi(userID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -61,7 +85,6 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// First, check if the user exists
 	var exists bool
 	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", userIDInt).Scan(&exists)
 	if err != nil {
@@ -80,7 +103,6 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// More efficient query that fetches all data in one go using SQL joins and aggregation
 	query := `
 		WITH UserConversations AS (
 			SELECT 
@@ -215,7 +237,6 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Parse participants JSON
 		var participants []gin.H
 		err = json.Unmarshal(participantsJSON, &participants)
 		if err != nil {
@@ -233,7 +254,6 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 			"unread_count": unreadCount,
 		}
 
-		// Add latest message if it exists
 		if messageID.Valid {
 			conversationData["latest_message"] = gin.H{
 				"id":         messageID.Int64,
@@ -256,13 +276,36 @@ func GetUserConversations(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// GetConversationMessages retrieves messages for a specific conversation with pagination
-// GET /api/messaging/conversation/:conversation_id/messages
+/**
+ * GetConversationMessages retrieves messages for a specific conversation with pagination.
+ *
+ * Endpoint: GET /messaging/conversation/:conversation_id/messages
+ *
+ * Path Parameters:
+ *   - conversation_id: Conversation ID to get messages for
+ *
+ * Query Parameters:
+ *   - user_id: Optional user ID to mark messages as read
+ *   - limit: Optional limit for number of messages (default: 50)
+ *   - before_id: Optional message ID to fetch messages before (for pagination)
+ *
+ * Returns:
+ *   - 200 OK: Messages retrieved successfully
+ *     {
+ *       "success": boolean,
+ *       "messages": array,
+ *       "has_more": boolean,
+ *       "oldest_id": number,
+ *       "total_count": number
+ *     }
+ *   - 400 Bad Request: Missing or invalid conversation ID
+ *   - 500 Internal Server Error: Database error
+ */
 func GetConversationMessages(c *gin.Context, db *sql.DB) {
 	conversationID := c.Param("conversation_id")
 	userID := c.Query("user_id")
-	limitStr := c.DefaultQuery("limit", "50")       // Default fetch 50 messages
-	beforeIDStr := c.DefaultQuery("before_id", "0") // ID to fetch messages before (for pagination)
+	limitStr := c.DefaultQuery("limit", "50")
+	beforeIDStr := c.DefaultQuery("before_id", "0")
 
 	if conversationID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -272,7 +315,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Convert conversation ID from string to integer
 	conversationIDInt, err := strconv.Atoi(conversationID)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -282,7 +324,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Convert user ID from string to integer if provided
 	var userIDInt int
 	if userID != "" {
 		userIDInt, err = strconv.Atoi(userID)
@@ -294,7 +335,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Mark messages as read for this user
 		if userIDInt > 0 {
 			_, err = db.Exec(`
 				UPDATE messages
@@ -304,12 +344,10 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 
 			if err != nil {
 				fmt.Printf("Error marking messages as read: %v\n", err)
-				// Continue anyway, this is not a critical error
 			}
 		}
 	}
 
-	// Convert limit and beforeID
 	limit, err := strconv.Atoi(limitStr)
 	if err != nil || limit <= 0 {
 		limit = 50
@@ -324,7 +362,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 	var queryArgs []interface{}
 
 	if beforeID > 0 {
-		// Get messages before a certain ID (for pagination)
 		query = `
 			SELECT 
 				m.id, 
@@ -346,7 +383,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 		`
 		queryArgs = []interface{}{conversationIDInt, beforeID, limit}
 	} else {
-		// Get the most recent messages
 		query = `
 			SELECT 
 				m.id, 
@@ -402,7 +438,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Keep track of the oldest message ID for pagination
 		if oldestID == 0 || message.ID < oldestID {
 			oldestID = message.ID
 		}
@@ -418,12 +453,10 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 		})
 	}
 
-	// Reverse the order so messages are in chronological order (oldest first)
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 
-	// Check if there are more messages available
 	var hasMore bool
 	var totalCount int
 	if oldestID > 0 {
@@ -439,7 +472,6 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 			hasMore = false
 		}
 
-		// Also get the total count for the frontend
 		err = db.QueryRow(`
 			SELECT COUNT(*) FROM messages 
 			WHERE conversation_id = $1
@@ -460,14 +492,33 @@ func GetConversationMessages(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// SendMessage sends a new message in a conversation
-// POST /api/messaging/messages
+/**
+ * SendMessage sends a new message in a conversation.
+ *
+ * Endpoint: POST /messaging/messages
+ *
+ * Request Body:
+ * {
+ *   "conversation_id": number,  // Required: Conversation ID
+ *   "sender_id": number,        // Required: Sender user ID
+ *   "content": string           // Required: Message content
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Message sent successfully
+ *     {
+ *       "success": boolean,
+ *       "message": object
+ *     }
+ *   - 400 Bad Request: Invalid request data
+ *   - 404 Not Found: Conversation not found
+ *   - 403 Forbidden: User is not a participant in conversation
+ *   - 500 Internal Server Error: Database error
+ */
 func SendMessage(c *gin.Context, db *sql.DB) {
-	// Log the raw request body for debugging
 	body, _ := c.GetRawData()
 	fmt.Printf("SendMessage raw request body: %s\n", string(body))
 
-	// Reset the request body so it can be read again
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	var request struct {
@@ -487,7 +538,6 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 
 	fmt.Printf("SendMessage parsed request: %+v\n", request)
 
-	// Validate the request
 	if request.ConversationID <= 0 {
 		fmt.Printf("SendMessage error: Invalid conversation ID: %d\n", request.ConversationID)
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -515,7 +565,6 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if conversation exists
 	var exists bool
 	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM conversations WHERE id = $1)", request.ConversationID).Scan(&exists)
 	if err != nil {
@@ -536,7 +585,6 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if user is a participant in the conversation
 	err = db.QueryRow("SELECT EXISTS(SELECT 1 FROM conversation_participants WHERE conversation_id = $1 AND user_id = $2)",
 		request.ConversationID, request.SenderID).Scan(&exists)
 	if err != nil {
@@ -558,7 +606,6 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Insert the message
 	var messageID int
 	var createdAt time.Time
 	err = db.QueryRow(`
@@ -578,7 +625,6 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 
 	fmt.Printf("SendMessage successfully inserted message with ID: %d\n", messageID)
 
-	// Get the sent message with sender info
 	var message Message
 	err = db.QueryRow(`
 		SELECT 
@@ -614,7 +660,6 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Send push notifications to all other participants in the conversation
 	go sendPushNotifications(db, request.ConversationID, request.SenderID, message.SenderName, request.Content)
 
 	fmt.Printf("SendMessage successful for message ID: %d\n", messageID)
@@ -633,18 +678,35 @@ func SendMessage(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// CreateConversation creates a new conversation between users
-// POST /api/messaging/conversations
+/**
+ * CreateConversation creates a new conversation between users.
+ *
+ * Endpoint: POST /messaging/conversations
+ *
+ * Request Body:
+ * {
+ *   "user_ids": number[]  // Required: Array of user IDs (minimum 2 users)
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Conversation created or found successfully
+ *     {
+ *       "success": boolean,
+ *       "conversation_id": number,
+ *       "participants": array
+ *     }
+ *   - 400 Bad Request: Invalid request data or insufficient users
+ *   - 404 Not Found: User not found
+ *   - 500 Internal Server Error: Database error
+ */
 func CreateConversation(c *gin.Context, db *sql.DB) {
 	var request struct {
 		UserIDs []int `json:"user_ids"`
 	}
 
-	// Log the raw request body for debugging
 	body, _ := c.GetRawData()
 	fmt.Printf("Raw request body: %s\n", string(body))
 
-	// Reset the request body so it can be read again
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -658,7 +720,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 
 	fmt.Printf("Parsed user IDs: %v\n", request.UserIDs)
 
-	// Validate the request
 	if len(request.UserIDs) < 2 {
 		fmt.Printf("Error: Not enough users. Received %d users\n", len(request.UserIDs))
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -668,7 +729,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if users exist and collect their roles
 	userRoles := make(map[int]string)
 	for _, userID := range request.UserIDs {
 		var role string
@@ -696,7 +756,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 
 	fmt.Printf("User roles: %v\n", userRoles)
 
-	// Check if we have a valid conversation pair (student-staff)
 	var hasStudent, hasStaff bool
 	for _, role := range userRoles {
 		if role == "student" {
@@ -715,8 +774,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if there's already a conversation between these users
-	// For a conversation between exactly these users (no more, no fewer)
 	if len(request.UserIDs) == 2 {
 		query := `
 			SELECT c.id
@@ -730,7 +787,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		var existingConversationID int
 		err := db.QueryRow(query, request.UserIDs[0], request.UserIDs[1]).Scan(&existingConversationID)
 		if err == nil {
-			// Conversation exists, return it
 			c.JSON(http.StatusOK, gin.H{
 				"success":         true,
 				"conversation_id": existingConversationID,
@@ -746,7 +802,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		}
 	}
 
-	// Start a transaction
 	tx, err := db.Begin()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -756,7 +811,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Create a new conversation
 	var conversationID int
 	err = tx.QueryRow(`
 		INSERT INTO conversations (created_at) 
@@ -773,7 +827,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Add all users to the conversation
 	for _, userID := range request.UserIDs {
 		_, err := tx.Exec(`
 			INSERT INTO conversation_participants (conversation_id, user_id) 
@@ -790,7 +843,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		}
 	}
 
-	// Commit the transaction
 	err = tx.Commit()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -800,7 +852,6 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Get user details for all participants
 	query := `
 		SELECT 
 			u.id, 
@@ -855,9 +906,26 @@ func CreateConversation(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// GetAvailableChatUsers returns users that a student can chat with (teachers)
-// or users that a teacher can chat with (students)
-// GET /api/messaging/chat-users/:user_id
+/**
+ * GetAvailableChatUsers returns users that a student can chat with (teachers)
+ * or users that a teacher can chat with (students).
+ *
+ * Endpoint: GET /messaging/chat-users/:user_id
+ *
+ * Path Parameters:
+ *   - user_id: User ID to get available chat users for
+ *
+ * Returns:
+ *   - 200 OK: Available chat users retrieved successfully
+ *     {
+ *       "success": boolean,
+ *       "role": string,
+ *       "users": array
+ *     }
+ *   - 400 Bad Request: Missing or invalid user ID
+ *   - 404 Not Found: User not found
+ *   - 500 Internal Server Error: Database error
+ */
 func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 	userID := c.Param("user_id")
 	if userID == "" {
@@ -870,7 +938,6 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 
 	fmt.Printf("GetAvailableChatUsers: Processing request for user ID: %s\n", userID)
 
-	// Convert user ID from string to integer
 	userIDInt, err := strconv.Atoi(userID)
 	if err != nil {
 		fmt.Printf("GetAvailableChatUsers: Invalid user ID format: %s, error: %v\n", userID, err)
@@ -881,7 +948,6 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 		return
 	}
 
-	// Check if user exists and get their role
 	var userRole string
 	err = db.QueryRow("SELECT role FROM users WHERE id = $1", userIDInt).Scan(&userRole)
 	if err != nil {
@@ -907,8 +973,6 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 	var query string
 	var availableRole string
 
-	// If user is a student, they can chat with any staff member
-	// If user is a staff member (teacher/admin), they can chat with students
 	if userRole == "student" {
 		query = `
             SELECT 
@@ -1006,7 +1070,6 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			return
 		}
 
-		// Create user object with additional roles
 		userObj := gin.H{
 			"id":         user.ID,
 			"first_name": user.FirstName,
@@ -1015,10 +1078,7 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			"role":       user.Role,
 		}
 
-		// Add profile picture if present
 		if user.ProfilePicture.Valid && user.ProfilePicture.String != "" {
-			// Build the URL using the API endpoint for profile pictures
-			// We can either extract the extension from the file path or default to .jpg
 			var extension string
 			if strings.HasSuffix(user.ProfilePicture.String, ".png") {
 				extension = ".png"
@@ -1027,17 +1087,14 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 			} else if strings.HasSuffix(user.ProfilePicture.String, ".jpeg") {
 				extension = ".jpeg"
 			} else {
-				extension = ".jpg" // Default to jpg
+				extension = ".jpg"
 			}
 
-			// Use the absolute URL for the API endpoint
 			userObj["profile_picture"] = fmt.Sprintf("/api/profile_pictures/%d%s", user.ID, extension)
 
-			// For debugging
 			fmt.Printf("Profile picture for user %d: %s\n", user.ID, userObj["profile_picture"])
 		}
 
-		// Add additional roles if present
 		if additionalRoles.Valid && additionalRoles.String != "" {
 			userObj["additional_roles"] = strings.Split(additionalRoles.String, ", ")
 		} else {
@@ -1056,10 +1113,18 @@ func GetAvailableChatUsers(c *gin.Context, db *sql.DB) {
 	})
 }
 
-// sendPushNotifications sends push notifications to all participants in a conversation
-// except the sender of the message
+/**
+ * sendPushNotifications sends push notifications to all participants in a conversation
+ * except the sender of the message.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *   - conversationID: Conversation ID
+ *   - senderID: Sender user ID
+ *   - senderName: Sender's name
+ *   - content: Message content
+ */
 func sendPushNotifications(db *sql.DB, conversationID int, senderID int, senderName string, content string) {
-	// Find all participants in the conversation except the sender
 	query := `
 		SELECT u.id, u.device_id
 		FROM users u
@@ -1074,7 +1139,6 @@ func sendPushNotifications(db *sql.DB, conversationID int, senderID int, senderN
 	}
 	defer rows.Close()
 
-	// Send a push notification to each participant
 	for rows.Next() {
 		var userID int
 		var deviceID string
@@ -1084,19 +1148,16 @@ func sendPushNotifications(db *sql.DB, conversationID int, senderID int, senderN
 			continue
 		}
 
-		// Skip if device ID is missing or invalid
 		if deviceID == "" {
 			fmt.Printf("Skipping notification for user %d: No device ID\n", userID)
 			continue
 		}
 
-		// Truncate content if too long for notification
 		messagePreview := content
 		if len(messagePreview) > 100 {
 			messagePreview = messagePreview[:97] + "..."
 		}
 
-		// Send the notification
 		err := notifications.SendMessageNotification(deviceID, conversationID, senderName, messagePreview)
 		if err != nil {
 			fmt.Printf("Error sending notification to user %d: %v\n", userID, err)
@@ -1110,7 +1171,25 @@ func sendPushNotifications(db *sql.DB, conversationID int, senderID int, senderN
 	}
 }
 
-// SetupMessagingRoutes sets up the messaging routes
+/**
+ * SetupMessagingRoutes sets up the messaging routes.
+ *
+ * Endpoints:
+ * 1. GET /messaging/conversations/:user_id
+ *    - Retrieves all conversations for a specific user
+ *
+ * 2. GET /messaging/conversation/:conversation_id/messages
+ *    - Retrieves messages for a specific conversation with pagination
+ *
+ * 3. POST /messaging/messages
+ *    - Sends a new message in a conversation
+ *
+ * 4. POST /messaging/conversations
+ *    - Creates a new conversation between users
+ *
+ * 5. GET /messaging/chat-users/:user_id
+ *    - Returns users that a user can chat with
+ */
 func SetupMessagingRoutes(router gin.IRouter, db *sql.DB) {
 	messagingGroup := router.Group("/messaging")
 	{

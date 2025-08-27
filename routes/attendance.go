@@ -15,91 +15,81 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-/*
-CRON JOB SETUP FOR AUTO-MARKING LATE STUDENTS
+/**
+ * CRON JOB SETUP FOR AUTO-MARKING LATE STUDENTS
+ *
+ * This server includes a function to automatically mark students as late at 7:40 AM Shanghai time.
+ * To set this up, you need to create a cron job on the server.
+ *
+ * 1. Create a small Go program that calls the AutoMarkLateStudents function:
+ *
+ * ```go
+ * // auto_mark_late.go
+ * package main
+ *
+ * import (
+ *     "database/sql"
+ *     "fmt"
+ *     "log"
+ *     "server/routes"
+ *     "time"
+ *
+ *     _ "github.com/lib/pq"
+ * )
+ *
+ * func main() {
+ *     db, err := sql.Open("postgres", "your_connection_string_here")
+ *     if err != nil {
+ *         log.Fatalf("Failed to connect to database: %v", err)
+ *     }
+ *     defer db.Close()
+ *
+ *     now := time.Now()
+ *     fmt.Printf("Auto-marking late students at %s\n", now.Format(time.RFC3339))
+ *
+ *     routes.AutoMarkLateStudents(db, nil)
+ * }
+ * ```
+ *
+ * 2. Compile this program:
+ *    ```
+ *    go build -o auto_mark_late auto_mark_late.go
+ *    ```
+ *
+ * 3. Set up a cron job to run at 7:40 AM Shanghai time (which is UTC+8):
+ *    - 7:40 AM Shanghai time = 23:40 PM UTC (previous day)
+ *
+ *    Add this to your crontab (run `crontab -e`):
+ *    ```
+ *    # Run at 7:40 AM Shanghai time (23:40 UTC)
+ *    40 23 * * 1-5 /path/to/auto_mark_late >> /var/log/auto_mark_late.log 2>&1
+ *    ```
+ *
+ *    The '1-5' means Monday through Friday (weekdays only).
+ *
+ * 4. Make sure the log file is writable:
+ *    ```
+ *    touch /var/log/auto_mark_late.log
+ *    chmod 644 /var/log/auto_mark_late.log
+ *    ```
+ *
+ * This setup will automatically mark pending students as late at 7:40 AM Shanghai time
+ * on weekdays, which matches the behavior previously implemented on the client side.
+ */
 
-This server includes a function to automatically mark students as late at 7:40 AM Shanghai time.
-To set this up, you need to create a cron job on the server.
-
-1. Create a small Go program that calls the AutoMarkLateStudents function:
-
-```go
-// auto_mark_late.go
-package main
-
-import (
-	"database/sql"
-	"fmt"
-	"log"
-	"server/routes"  // Import your server's routes package
-	"time"
-
-	_ "github.com/lib/pq"  // Or whatever database driver you're using
-)
-
-func main() {
-	// Connect to the database
-	db, err := sql.Open("postgres", "your_connection_string_here")
-	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
-	}
-	defer db.Close()
-
-	// Log the execution time
-	now := time.Now()
-	fmt.Printf("Auto-marking late students at %s\n", now.Format(time.RFC3339))
-
-	// Call the auto-mark function with nil to use current time
-	routes.AutoMarkLateStudents(db, nil)
-}
-```
-
-2. Compile this program:
-   ```
-   go build -o auto_mark_late auto_mark_late.go
-   ```
-
-3. Set up a cron job to run at 7:40 AM Shanghai time (which is UTC+8):
-   - 7:40 AM Shanghai time = 23:40 PM UTC (previous day)
-
-   Add this to your crontab (run `crontab -e`):
-   ```
-   # Run at 7:40 AM Shanghai time (23:40 UTC)
-   40 23 * * 1-5 /path/to/auto_mark_late >> /var/log/auto_mark_late.log 2>&1
-   ```
-
-   The '1-5' means Monday through Friday (weekdays only).
-
-4. Make sure the log file is writable:
-   ```
-   touch /var/log/auto_mark_late.log
-   chmod 644 /var/log/auto_mark_late.log
-   ```
-
-This setup will automatically mark pending students as late at 7:40 AM Shanghai time
-on weekdays, which matches the behavior previously implemented on the client side.
-*/
-
-// GetYearGroups returns all available year groups with attendance statistics from DB
-//
-// Endpoint: GET /api/attendance/year-groups
-//
-// Returns:
-//   - 200 OK: Successfully retrieved year groups
-//     {
-//     "success": true,
-//     "yearGroups": [
-//     {
-//     "id": string,      // e.g., "pib-a"
-//     "name": string,    // e.g., "PIB A"
-//     "year": string,    // e.g., "PIB"
-//     "section": string, // e.g., "A"
-//     "students": int,   // Number of students in the group
-//     "attendance": string // e.g., "95.5%"
-//     }
-//     ]
-//     }
-//   - 500 Internal Server Error: Database error
+/**
+ * GetYearGroups returns all available year groups with attendance statistics from DB.
+ *
+ * Endpoint: GET /attendance/year-groups
+ *
+ * Returns:
+ *   - 200 OK: Successfully retrieved year groups
+ *     {
+ *       "success": boolean,
+ *       "yearGroups": array
+ *     }
+ *   - 500 Internal Server Error: Database error
+ */
 func GetYearGroups(c *gin.Context, db *sql.DB) {
 	yearGroups := models.GenerateYearGroups()
 

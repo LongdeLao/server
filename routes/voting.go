@@ -13,35 +13,87 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// SetupVotingRoutes registers all the routes related to the voting system
+/**
+ * SetupVotingRoutes registers all the routes related to the voting system.
+ *
+ * Endpoints:
+ * 1. GET /voting/events
+ *    - Returns all voting events with their sub votes and options
+ *
+ * 2. GET /voting/events/:id
+ *    - Returns a single voting event with its sub votes and options
+ *
+ * 3. POST /voting/events
+ *    - Creates a new voting event with its sub-votes and options
+ *
+ * 4. PUT /voting/events/:id
+ *    - Updates an existing voting event
+ *
+ * 5. DELETE /voting/events/:id
+ *    - Deletes a voting event and all related data
+ *
+ * 6. POST /voting/vote
+ *    - Handles a user's vote submission
+ *
+ * 7. GET /voting/user-votes/:user_id
+ *    - Returns all votes submitted by a specific user
+ *
+ * 8. DELETE /voting/user-votes/:id
+ *    - Deletes a specific user vote
+ *
+ * 9. GET /voting/statistics/:event_id
+ *    - Returns statistics for a specific voting event
+ */
 func SetupVotingRoutes(router *gin.RouterGroup, db *sql.DB) {
-	// Voting events endpoints
 	router.GET("/voting/events", getVotingEvents(db))
 	router.GET("/voting/events/:id", getVotingEventByID(db))
 	router.POST("/voting/events", createVotingEvent(db))
 	router.PUT("/voting/events/:id", updateVotingEvent(db))
 	router.DELETE("/voting/events/:id", deleteVotingEvent(db))
 
-	// User votes endpoints
 	router.POST("/voting/vote", submitVote(db))
 	router.GET("/voting/user-votes/:user_id", getUserVotes(db))
 	router.DELETE("/voting/user-votes/:id", deleteUserVote(db))
 
-	// Statistics endpoints
 	router.GET("/voting/statistics/:event_id", getVotingStatistics(db))
 }
 
-// getVotingEvents returns all voting events with their sub votes and options
+/**
+ * getVotingEvents returns all voting events with their sub votes and options.
+ *
+ * Endpoint: GET /voting/events
+ *
+ * Query Parameters:
+ *   - status: Optional filter by event status
+ *   - user_id: Optional user ID to include user's votes in response
+ *
+ * Returns:
+ *   - 200 OK: Array of voting events
+ *     [
+ *       {
+ *         "id": number,
+ *         "title": string,
+ *         "description": string,
+ *         "deadline": string,
+ *         "status": string,
+ *         "organizer_id": number,
+ *         "organizer_name": string,
+ *         "organizer_role": string,
+ *         "created_at": string,
+ *         "vote_count": number,
+ *         "total_votes": number,
+ *         "sub_votes": array
+ *       }
+ *     ]
+ *   - 500 Internal Server Error: Database error
+ */
 func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get query parameters
 		status := c.Query("status")
 		userID := c.Query("user_id")
 
-		// Add debug logging
 		log.Printf("Getting voting events. Status filter: %s, User ID: %s", status, userID)
 
-		// Base query to get voting events - handle NULLs explicitly with COALESCE
 		query := `
             SELECT ve.id, ve.title, 
                    COALESCE(ve.description, '') as description, 
@@ -59,20 +111,16 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 		args := []interface{}{}
 		argCount := 1
 
-		// Add status filter if provided
 		if status != "" {
 			query += fmt.Sprintf(" AND ve.status = $%d", argCount)
 			args = append(args, status)
 			argCount++
 		}
 
-		// Order by created_at
 		query += " ORDER BY ve.created_at DESC"
 
-		// Log the final query for debugging
 		log.Printf("SQL Query: %s with args: %v", query, args)
 
-		// Execute the query
 		rows, err := db.Query(query, args...)
 		if err != nil {
 			log.Printf("Error executing SQL query: %v", err)
@@ -102,7 +150,6 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 
 			log.Printf("Successfully scanned event ID %d: %s", event.ID, event.Title)
 
-			// Get vote count for this event
 			var voteCount int
 			err := db.QueryRow(`
 				SELECT COUNT(DISTINCT uv.user_id) 
@@ -117,8 +164,6 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 			}
 			event.VoteCount = voteCount
 
-			// Get total eligible users (placeholder - actual logic depends on your requirements)
-			// For example, this counts all users
 			var totalUsers int
 			err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
 			if err != nil && err != sql.ErrNoRows {
@@ -128,10 +173,8 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 			}
 			event.TotalVotes = totalUsers
 
-			// Get sub-votes for this event
 			subVotes := getSubVotesForEvent(db, event.ID, userID)
 			if subVotes == nil {
-				// Initialize with empty array instead of nil
 				event.SubVotes = []models.SubVote{}
 			} else {
 				event.SubVotes = subVotes
@@ -145,7 +188,22 @@ func getVotingEvents(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// getVotingEventByID returns a single voting event with its sub votes and options
+/**
+ * getVotingEventByID returns a single voting event with its sub votes and options.
+ *
+ * Endpoint: GET /voting/events/:id
+ *
+ * Path Parameters:
+ *   - id: Event ID
+ *
+ * Query Parameters:
+ *   - user_id: Optional user ID to include user's votes in response
+ *
+ * Returns:
+ *   - 200 OK: Single voting event object
+ *   - 404 Not Found: Event not found
+ *   - 500 Internal Server Error: Database error
+ */
 func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		eventID := c.Param("id")
@@ -153,7 +211,6 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 
 		log.Printf("Getting voting event by ID: %s, User ID: %s", eventID, userID)
 
-		// Get event details
 		var event models.VotingEvent
 		err := db.QueryRow(`
 			SELECT ve.id, ve.title, 
@@ -192,7 +249,6 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 
 		log.Printf("Successfully retrieved event ID %d: %s", event.ID, event.Title)
 
-		// Get vote count
 		var voteCount int
 		err = db.QueryRow(`
 			SELECT COUNT(DISTINCT uv.user_id) 
@@ -207,7 +263,6 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 		}
 		event.VoteCount = voteCount
 
-		// Get total eligible users
 		var totalUsers int
 		err = db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
 		if err != nil && err != sql.ErrNoRows {
@@ -217,10 +272,8 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 		}
 		event.TotalVotes = totalUsers
 
-		// Get sub-votes for this event
 		subVotes := getSubVotesForEvent(db, event.ID, userID)
 		if subVotes == nil {
-			// Initialize with empty array instead of nil
 			event.SubVotes = []models.SubVote{}
 		} else {
 			event.SubVotes = subVotes
@@ -231,7 +284,32 @@ func getVotingEventByID(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// createVotingEvent creates a new voting event with its sub-votes and options
+/**
+ * createVotingEvent creates a new voting event with its sub-votes and options.
+ *
+ * Endpoint: POST /voting/events
+ *
+ * Headers:
+ *   - User-ID: Required user ID for organizer
+ *
+ * Request Body:
+ * {
+ *   "title": string,           // Required: Event title
+ *   "description": string,     // Optional: Event description
+ *   "deadline": string,        // Required: Event deadline (ISO format)
+ *   "status": string,          // Required: Event status
+ *   "sub_votes": array         // Required: Array of sub-votes
+ * }
+ *
+ * Returns:
+ *   - 201 Created: Event created successfully
+ *     {
+ *       "message": string,
+ *       "id": number
+ *     }
+ *   - 400 Bad Request: Invalid request data or missing User-ID
+ *   - 500 Internal Server Error: Database error
+ */
 func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request models.VotingEventRequest
@@ -240,7 +318,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Start a transaction
 		tx, err := db.Begin()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction: " + err.Error()})
@@ -248,7 +325,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Extract user ID from the request
 		userIDStr := c.GetHeader("User-ID")
 		if userIDStr == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "User ID is required"})
@@ -260,7 +336,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Insert voting event
 		var eventID int
 		err = tx.QueryRow(`
             INSERT INTO voting_events (title, description, deadline, status, organizer_id)
@@ -273,7 +348,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Insert sub-votes and options
 		for _, subVoteReq := range request.SubVotes {
 			var subVoteID int
 			err = tx.QueryRow(`
@@ -287,7 +361,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 				return
 			}
 
-			// Insert options for this sub-vote
 			for _, optionReq := range subVoteReq.Options {
 				_, err = tx.Exec(`
                     INSERT INTO vote_options (sub_vote_id, text, has_custom_input)
@@ -301,7 +374,6 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		// Commit the transaction
 		if err := tx.Commit(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 			return
@@ -314,7 +386,29 @@ func createVotingEvent(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// updateVotingEvent updates an existing voting event
+/**
+ * updateVotingEvent updates an existing voting event.
+ *
+ * Endpoint: PUT /voting/events/:id
+ *
+ * Path Parameters:
+ *   - id: Event ID to update
+ *
+ * Request Body:
+ * {
+ *   "title": string,           // Required: Event title
+ *   "description": string,     // Optional: Event description
+ *   "deadline": string,        // Required: Event deadline (ISO format)
+ *   "status": string,          // Required: Event status
+ *   "sub_votes": array         // Required: Array of sub-votes
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Event updated successfully
+ *   - 400 Bad Request: Invalid request data
+ *   - 404 Not Found: Event not found
+ *   - 500 Internal Server Error: Database error
+ */
 func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		eventID := c.Param("id")
@@ -325,7 +419,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Verify event exists
 		var exists bool
 		err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM voting_events WHERE id = $1)", eventID).Scan(&exists)
 		if err != nil {
@@ -337,7 +430,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Start a transaction
 		tx, err := db.Begin()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction: " + err.Error()})
@@ -345,7 +437,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Update event
 		_, err = tx.Exec(`
             UPDATE voting_events
             SET title = $1, description = $2, deadline = $3, status = $4
@@ -357,9 +448,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// For simplicity, we'll delete all sub-votes and recreate them
-		// This is not the most efficient approach but works for the demonstration
-		// A real implementation might handle partial updates more carefully
 		_, err = tx.Exec(`
 			DELETE FROM sub_votes WHERE event_id = $1
 		`, eventID)
@@ -369,7 +457,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Insert new sub-votes and options
 		for _, subVoteReq := range request.SubVotes {
 			var subVoteID int
 			err = tx.QueryRow(`
@@ -383,7 +470,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 				return
 			}
 
-			// Insert options for this sub-vote
 			for _, optionReq := range subVoteReq.Options {
 				_, err = tx.Exec(`
                     INSERT INTO vote_options (sub_vote_id, text, has_custom_input)
@@ -397,7 +483,6 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		// Commit the transaction
 		if err := tx.Commit(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 			return
@@ -407,12 +492,23 @@ func updateVotingEvent(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// deleteVotingEvent deletes a voting event and all related data
+/**
+ * deleteVotingEvent deletes a voting event and all related data.
+ *
+ * Endpoint: DELETE /voting/events/:id
+ *
+ * Path Parameters:
+ *   - id: Event ID to delete
+ *
+ * Returns:
+ *   - 200 OK: Event deleted successfully
+ *   - 404 Not Found: Event not found
+ *   - 500 Internal Server Error: Database error
+ */
 func deleteVotingEvent(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		eventID := c.Param("id")
 
-		// Verify event exists
 		var exists bool
 		err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM voting_events WHERE id = $1)", eventID).Scan(&exists)
 		if err != nil {
@@ -424,7 +520,6 @@ func deleteVotingEvent(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Delete the event - cascade deletion will handle sub-votes, options, and user votes
 		_, err = db.Exec("DELETE FROM voting_events WHERE id = $1", eventID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete event: " + err.Error()})
@@ -435,7 +530,27 @@ func deleteVotingEvent(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// submitVote handles a user's vote submission
+/**
+ * submitVote handles a user's vote submission.
+ *
+ * Endpoint: POST /voting/vote
+ *
+ * Headers:
+ *   - User-ID: Required user ID
+ *
+ * Request Body:
+ * {
+ *   "sub_vote_id": number,     // Required: Sub-vote ID
+ *   "option_id": number,       // Required: Option ID
+ *   "custom_input": string     // Optional: Custom input text
+ * }
+ *
+ * Returns:
+ *   - 200 OK: Vote submitted successfully
+ *   - 400 Bad Request: Invalid request data, event not active, or deadline passed
+ *   - 404 Not Found: Sub-vote or option not found
+ *   - 500 Internal Server Error: Database error
+ */
 func submitVote(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var voteRequest models.UserVoteRequest
@@ -444,7 +559,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Extract user ID from the request
 		userIDStr := c.GetHeader("User-ID")
 		if userIDStr == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "User ID is required"})
@@ -456,7 +570,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Start a transaction
 		tx, err := db.Begin()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction: " + err.Error()})
@@ -464,7 +577,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Check if the sub-vote exists and get the event ID
 		var eventID int
 		var deadline time.Time
 		var status string
@@ -484,7 +596,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Check if the voting event is active and deadline has not passed
 		if status != "active" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "This voting event is not active"})
 			return
@@ -495,7 +606,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Check if the option exists and belongs to the specified sub-vote
 		var optionExists bool
 		err = tx.QueryRow(`
 			SELECT EXISTS(SELECT 1 FROM vote_options WHERE id = $1 AND sub_vote_id = $2)
@@ -511,7 +621,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Check if the user has already voted for this sub-vote
 		var existingVoteID int
 		err = tx.QueryRow(`
 			SELECT id FROM user_votes WHERE user_id = $1 AND sub_vote_id = $2
@@ -522,8 +631,7 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// If user has already voted, update their vote
-		if err == nil { // User has voted before
+		if err == nil {
 			_, err = tx.Exec(`
 				UPDATE user_votes
 				SET option_id = $1, custom_input = $2
@@ -534,7 +642,7 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update vote: " + err.Error()})
 				return
 			}
-		} else { // User hasn't voted before, insert new vote
+		} else {
 			_, err = tx.Exec(`
 				INSERT INTO user_votes (user_id, sub_vote_id, option_id, custom_input)
 				VALUES ($1, $2, $3, $4)
@@ -546,8 +654,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			}
 		}
 
-		// Update vote count in options table
-		// First, recalculate counts for all options in this sub-vote
 		_, err = tx.Exec(`
 			UPDATE vote_options vo
 			SET vote_count = (
@@ -563,7 +669,6 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Commit the transaction
 		if err := tx.Commit(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 			return
@@ -573,7 +678,30 @@ func submitVote(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// getUserVotes returns all votes submitted by a specific user
+/**
+ * getUserVotes returns all votes submitted by a specific user.
+ *
+ * Endpoint: GET /voting/user-votes/:user_id
+ *
+ * Path Parameters:
+ *   - user_id: User ID to get votes for
+ *
+ * Returns:
+ *   - 200 OK: Array of user votes with details
+ *     [
+ *       {
+ *         "id": number,
+ *         "user_id": number,
+ *         "sub_vote_id": number,
+ *         "option_id": number,
+ *         "custom_input": string,
+ *         "created_at": string,
+ *         "sub_vote_title": string,
+ *         "option_text": string
+ *       }
+ *     ]
+ *   - 500 Internal Server Error: Database error
+ */
 func getUserVotes(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID := c.Param("user_id")
@@ -626,7 +754,23 @@ func getUserVotes(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// deleteUserVote deletes a specific user vote
+/**
+ * deleteUserVote deletes a specific user vote.
+ *
+ * Endpoint: DELETE /voting/user-votes/:id
+ *
+ * Path Parameters:
+ *   - id: Vote ID to delete
+ *
+ * Headers:
+ *   - User-ID: Required user ID for authorization
+ *
+ * Returns:
+ *   - 200 OK: Vote deleted successfully
+ *   - 400 Bad Request: Missing User-ID
+ *   - 404 Not Found: Vote not found or does not belong to user
+ *   - 500 Internal Server Error: Database error
+ */
 func deleteUserVote(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		voteID := c.Param("id")
@@ -637,7 +781,6 @@ func deleteUserVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Start a transaction
 		tx, err := db.Begin()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction: " + err.Error()})
@@ -645,7 +788,6 @@ func deleteUserVote(db *sql.DB) gin.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Check if the vote exists and belongs to the user
 		var subVoteID int
 		err = tx.QueryRow(`
 			SELECT sub_vote_id FROM user_votes 
@@ -661,14 +803,12 @@ func deleteUserVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Delete the vote
 		_, err = tx.Exec("DELETE FROM user_votes WHERE id = $1", voteID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete vote: " + err.Error()})
 			return
 		}
 
-		// Update vote counts
 		_, err = tx.Exec(`
 			UPDATE vote_options vo
 			SET vote_count = (
@@ -684,7 +824,6 @@ func deleteUserVote(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Commit the transaction
 		if err := tx.Commit(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit transaction: " + err.Error()})
 			return
@@ -694,12 +833,32 @@ func deleteUserVote(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// getVotingStatistics returns statistics for a specific voting event
+/**
+ * getVotingStatistics returns statistics for a specific voting event.
+ *
+ * Endpoint: GET /voting/statistics/:event_id
+ *
+ * Path Parameters:
+ *   - event_id: Event ID to get statistics for
+ *
+ * Returns:
+ *   - 200 OK: Array of sub-vote statistics
+ *     [
+ *       {
+ *         "sub_vote_id": number,
+ *         "title": string,
+ *         "description": string,
+ *         "total_votes": number,
+ *         "option_stats": array
+ *       }
+ *     ]
+ *   - 404 Not Found: Event not found
+ *   - 500 Internal Server Error: Database error
+ */
 func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		eventID := c.Param("event_id")
 
-		// Check if the event exists
 		var exists bool
 		err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM voting_events WHERE id = $1)", eventID).Scan(&exists)
 		if err != nil {
@@ -711,7 +870,6 @@ func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Get sub-votes for this event
 		rows, err := db.Query(`
 			SELECT id, title, description 
 			FROM sub_votes 
@@ -748,7 +906,6 @@ func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 				return
 			}
 
-			// Get options for this sub-vote
 			optRows, err := db.Query(`
 				SELECT vo.id, vo.text, vo.vote_count, vo.has_custom_input
 				FROM vote_options vo
@@ -761,7 +918,6 @@ func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 			}
 			defer optRows.Close()
 
-			// Count total votes for this sub-vote
 			err = db.QueryRow(`
 				SELECT COUNT(*) FROM user_votes WHERE sub_vote_id = $1
 			`, stat.SubVoteID).Scan(&stat.TotalVotes)
@@ -787,12 +943,10 @@ func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 					return
 				}
 
-				// Calculate percentage
 				if stat.TotalVotes > 0 {
 					option.Percentage = int(float64(option.VoteCount) / float64(stat.TotalVotes) * 100)
 				}
 
-				// Get custom inputs if this option has them
 				if option.HasCustomInput && option.VoteCount > 0 {
 					customRows, err := db.Query(`
 						SELECT custom_input FROM user_votes 
@@ -826,7 +980,17 @@ func getVotingStatistics(db *sql.DB) gin.HandlerFunc {
 	}
 }
 
-// Helper function to get sub-votes for an event
+/**
+ * getSubVotesForEvent retrieves all sub-votes for a specific event.
+ *
+ * Parameters:
+ *   - db: Database connection
+ *   - eventID: Event ID to get sub-votes for
+ *   - userID: Optional user ID to include user's votes
+ *
+ * Returns:
+ *   - []models.SubVote: Array of sub-votes with options and user votes
+ */
 func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVote {
 	log.Printf("Getting sub-votes for event ID: %d, User ID: %s", eventID, userID)
 
@@ -852,7 +1016,6 @@ func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVot
 
 		log.Printf("Retrieved sub-vote ID %d: %s", subVote.ID, subVote.Title)
 
-		// Get options for this sub-vote
 		optRows, err := db.Query(`
 			SELECT id, sub_vote_id, text, has_custom_input, vote_count, created_at
 			FROM vote_options
@@ -861,7 +1024,6 @@ func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVot
 
 		if err != nil {
 			log.Printf("Error getting options for sub-vote %d: %v", subVote.ID, err)
-			// Continue with empty options rather than skipping the sub-vote entirely
 			subVote.Options = []models.VoteOption{}
 		} else {
 			defer optRows.Close()
@@ -884,7 +1046,6 @@ func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVot
 			}
 		}
 
-		// If user ID is provided, get the user's vote for this sub-vote
 		if userID != "" {
 			userIDInt, err := strconv.Atoi(userID)
 			if err != nil {
@@ -899,7 +1060,6 @@ func getSubVotesForEvent(db *sql.DB, eventID int, userID string) []models.SubVot
 
 				if err == nil {
 					log.Printf("Found user vote for sub-vote %d: option %d", subVote.ID, userVote.OptionID)
-					// If found user vote, attach it to the subVote as user_vote field
 					subVote.UserVote = &userVote
 				} else if err != sql.ErrNoRows {
 					log.Printf("Error retrieving user vote: %v", err)
