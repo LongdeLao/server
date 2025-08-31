@@ -33,7 +33,7 @@ type AttendanceRecord struct {
 // GenerateYearGroups returns all combinations of year groups and sections
 func GenerateYearGroups() []YearGroup {
 	// Define the available year groups and sections
-	years := []string{"PIB", "IB1"}
+	years := []string{"PIB", "IB1", "IB2"}
 	sections := []string{"A", "B"}
 
 	var yearGroups []YearGroup
@@ -61,6 +61,8 @@ func GetYearGroupByID(id string) (YearGroup, bool) {
 		"pib-b": {Year: "PIB", Section: "B", FullName: "PIB B"},
 		"ib1-a": {Year: "IB1", Section: "A", FullName: "IB1 A"},
 		"ib1-b": {Year: "IB1", Section: "B", FullName: "IB1 B"},
+		"ib2-a": {Year: "IB2", Section: "A", FullName: "IB2 A"},
+		"ib2-b": {Year: "IB2", Section: "B", FullName: "IB2 B"},
 	}
 
 	yearGroup, exists := idToYearGroup[id]

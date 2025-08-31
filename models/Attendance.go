@@ -4,7 +4,7 @@ package models
 type StudentAttendanceStatus struct {
 	UserID        int     `json:"user_id"`
 	Name          string  `json:"name"`
-	Year          int     `json:"year"`
+	Year          string  `json:"year"`
 	GroupName     string  `json:"group_name"`
 	CurrentStatus string  `json:"current_status"`
 	ArrivedAt     *string `json:"arrived_at,omitempty"`
