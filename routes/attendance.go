@@ -555,13 +555,13 @@ func GetYearGroups(c *gin.Context, db *sql.DB) {
 		var present, late, absent, medical, early int
 		rows, err := db.Query(`
 			SELECT 
-				COALESCE(status, 'pending') as status,
+				COALESCE(ah.status, 'pending') as status,
 				COUNT(*) as count
 			FROM users u
 			JOIN attendance a ON u.id = a.user_id
 			LEFT JOIN attendance_history ah ON u.id = ah.student_id AND ah.attendance_date = $3
 			WHERE u.role = 'student' AND a.year = $1 AND a.group_name = $2
-			GROUP BY COALESCE(status, 'pending')
+			GROUP BY COALESCE(ah.status, 'pending')
 		`, group.Year, group.Section, today)
 
 		if err != nil {
