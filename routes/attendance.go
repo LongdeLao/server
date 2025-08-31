@@ -409,7 +409,7 @@ func GetStudentAttendanceHistory(c *gin.Context, db *sql.DB) {
 	}
 
 	// Get student info
-	var student models.StudentAttendanceStatus
+	var student models.StudentAttendanceDetails
 	err = db.QueryRow(`
 		SELECT id, name FROM users WHERE id = $1 AND role = 'student'
 	`, studentID).Scan(&student.UserID, &student.Name)
