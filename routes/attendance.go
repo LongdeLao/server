@@ -77,13 +77,11 @@ func GetStudentAttendanceStatusForDate(c *gin.Context, db *sql.DB) {
 			COALESCE(ah.status, 'pending') as current_status,
 			ah.arrived_at
 		FROM users u
-		WHERE u.role = 'student' 
-			AND u.id IN (
-				SELECT user_id FROM attendance 
-				WHERE year = $1 AND group_name = $2
-			)
+		LEFT JOIN attendance a ON u.id = a.user_id
 		LEFT JOIN attendance_history ah ON u.id = ah.student_id 
 			AND ah.attendance_date = $3
+		WHERE u.role = 'student' 
+			AND (a.year = $1 AND a.group_name = $2)
 		ORDER BY u.name
 	`
 
