@@ -1,9 +1,6 @@
 package models
 
-import (
-	"fmt"
-	"time"
-)
+import "fmt"
 
 // YearGroup represents a year group with a name and section
 type YearGroup struct {
@@ -24,39 +21,6 @@ type Student struct {
 	Late      int    `json:"late"`
 	Medical   int    `json:"medical"`
 	Early     int    `json:"early"`
-}
-
-// AttendanceHistory represents a record in the attendance_history table
-type AttendanceHistory struct {
-	ID             int       `json:"id"`
-	StudentID      int       `json:"student_id"`
-	Status         string    `json:"status"`          // "present", "absent", "late", "medical", "early"
-	AttendanceDate string    `json:"attendance_date"` // YYYY-MM-DD format
-	ArrivedAt      *string   `json:"arrived_at"`      // HH:MM:SS format, nullable
-	CreatedAt      time.Time `json:"created_at"`
-}
-
-// StudentAttendanceStatus represents the current attendance status for a student
-type StudentAttendanceStatus struct {
-	UserID        int                 `json:"user_id"`
-	Name          string              `json:"name"`
-	Year          string              `json:"year"`
-	GroupName     string              `json:"group_name"`
-	CurrentStatus string              `json:"current_status"` // "present", "absent", "late", "medical", "early", "pending"
-	ArrivedAt     *string             `json:"arrived_at"`     // Only set if status is "late" and student has arrived
-	History       []AttendanceHistory `json:"history"`        // Historical attendance records
-	Stats         AttendanceStats     `json:"stats"`          // Overall attendance statistics
-}
-
-// AttendanceStats represents attendance statistics for a student
-type AttendanceStats struct {
-	Present    int     `json:"present"`
-	Absent     int     `json:"absent"`
-	Late       int     `json:"late"`
-	Medical    int     `json:"medical"`
-	Early      int     `json:"early"`
-	Total      int     `json:"total"`
-	Percentage float64 `json:"percentage"`
 }
 
 // AttendanceRecord represents the daily attendance for a class

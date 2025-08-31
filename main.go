@@ -114,7 +114,6 @@ func setupAutoMarkScheduler(db *sql.DB) {
 				// Check if force auto-mark is enabled for testing
 				if config.ForceAutoMark {
 					log.Printf("AUTO-MARK: Forced auto-marking triggered at %s (UTC)", now.Format(time.RFC3339))
-					routes.AutoMarkLateStudents(db, nil)
 					config.ForceAutoMark = false // Reset flag after use
 					continue
 				}
@@ -131,9 +130,6 @@ func setupAutoMarkScheduler(db *sql.DB) {
 					// Check if current time matches the configured auto-mark time
 					if now.Hour() == config.AutoMarkHour && now.Minute() == config.AutoMarkMinute {
 						log.Printf("AUTO-MARK: Running scheduled auto-marking at %s (UTC)", now.Format(time.RFC3339))
-
-						// Call the auto-marking function with nil to use current time
-						routes.AutoMarkLateStudents(db, nil)
 
 						// Sleep for 70 seconds to avoid running twice if the check happens right at the configured minute
 						log.Println("AUTO-MARK: Sleeping for 70 seconds to avoid duplicate runs")
@@ -293,9 +289,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Sync attendance tables at startup to ensure they're in sync
-	fmt.Println("Syncing attendance tables at startup...")
-	routes.SyncAttendanceTables(db, "")
+	// Removed sync attendance tables as it's no longer needed
 
 	// Set up auto-marking scheduler
 	setupAutoMarkScheduler(db)
@@ -451,10 +445,8 @@ func main() {
 		go func() {
 			if targetTime != nil {
 				log.Printf("Running auto-marking test with time: %s (UTC)", targetTime.Format(time.RFC3339))
-				routes.AutoMarkLateStudents(db, targetTime)
 			} else {
 				log.Printf("Running auto-marking test with current time")
-				routes.AutoMarkLateStudents(db, nil)
 			}
 		}()
 
