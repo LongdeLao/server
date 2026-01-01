@@ -506,6 +506,92 @@ func GetStudentAttendanceHistory(c *gin.Context, db *sql.DB) {
 	})
 }
 
+// DeleteAttendanceRecord deletes an attendance record for a student on a specific date
+//
+// Endpoint: DELETE /api/attendance/delete
+//
+// Request Body:
+//
+//	{
+//	  "student_id": 1,
+//	  "date": "2024-01-15" // optional, defaults to today
+//	}
+//
+// Returns:
+//   - 200 OK: Successfully deleted attendance record
+func DeleteAttendanceRecord(c *gin.Context, db *sql.DB) {
+	var request struct {
+		StudentID int    `json:"student_id"`
+		Date      string `json:"date"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Invalid request format: %v", err),
+		})
+		return
+	}
+
+	// Default to today if no date provided
+	if request.Date == "" {
+		request.Date = time.Now().Format("2006-01-02")
+	}
+
+	// Validate date format
+	_, err := time.Parse("2006-01-02", request.Date)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid date format. Use YYYY-MM-DD",
+		})
+		return
+	}
+
+	// Check if record exists
+	var recordID int
+	err = db.QueryRow(`
+		SELECT id FROM attendance_history
+		WHERE student_id = $1 AND attendance_date = $2
+	`, request.StudentID, request.Date).Scan(&recordID)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{
+				"success": false,
+				"message": "No attendance record found for this student on this date",
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error checking attendance record: %v", err),
+		})
+		return
+	}
+
+	// Delete the record
+	_, err = db.Exec(`
+		DELETE FROM attendance_history
+		WHERE id = $1
+	`, recordID)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": fmt.Sprintf("Error deleting attendance record: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":    true,
+		"message":    "Attendance record deleted successfully",
+		"student_id": request.StudentID,
+		"date":       request.Date,
+	})
+}
+
 // GetYearGroups returns all year groups with today's attendance summary
 //
 // Endpoint: GET /api/attendance/year-groups
@@ -662,6 +748,11 @@ func SetupAttendanceRoutes(router gin.IRouter, db *sql.DB) {
 		// Get attendance history for a student
 		attendanceGroup.GET("/history/:studentId", func(c *gin.Context) {
 			GetStudentAttendanceHistory(c, db)
+		})
+
+		// Delete attendance record for a student
+		attendanceGroup.DELETE("/delete", func(c *gin.Context) {
+			DeleteAttendanceRecord(c, db)
 		})
 	}
 }
